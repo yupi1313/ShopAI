@@ -1,0 +1,31 @@
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# node
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+.pnpm-store/
+
+# app data
+data/
+backups/
+profiles/
+*.log
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# claude local state
+.claude/worktrees/
+.claude/settings.local.json
