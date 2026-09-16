@@ -39,7 +39,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
       const hint =
         status === "connected"
           ? "AH is connected; I can search products and add them to your AH shopping list."
-          : "AH is not connected. To connect, the admin sends /store in a private chat with me and follows the steps. Search still works without connecting.";
+          : "AH is not connected. To connect, the admin sends /store ah in a private chat with me and follows the steps. Search still works without connecting.";
       return { status, hint };
     },
   });
@@ -89,7 +89,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     sideEffect: "none",
     async handler(_args, ctx) {
       const ts = tokenSource(storeDeps(ctx), ctx.household.id);
-      if (!(await ts.isMember())) return { connected: false, hint: "AH not connected; admin runs /store to connect." };
+      if (!(await ts.isMember())) return { connected: false, hint: "AH not connected; admin runs /store ah to connect." };
       const ah = buildClient(storeDeps(ctx), ctx.household.id);
       const list = await ah.shoppingList();
       return { connected: true, count: list.items.length, items: list.items.map((i) => ({ qty: i.quantity, name: i.description })) };
@@ -160,7 +160,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     const line =
       status === "connected"
         ? "Albert Heijn is connected. You can search AH and, after the user confirms, add products to the AH shopping list (basket_add, basket_fill_from_list). You never pay; a family member opens the AH app and checks out."
-        : "Albert Heijn is NOT connected yet. Search works, but to add to the AH basket the admin must connect it with /store. If asked to fill the basket, say it needs connecting first.";
+        : "Albert Heijn is NOT connected yet. Search works, but to add to the AH basket the admin must connect it with /store ah. If asked to fill the basket, say it needs connecting first.";
     return `Store: ${line}`;
   }
 

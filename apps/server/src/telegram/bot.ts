@@ -378,7 +378,7 @@ export const BOT_COMMANDS = [
   { command: "list", description: "Show the shopping list" },
   { command: "done", description: "Everything bought" },
   { command: "staples", description: "Regular purchases" },
-  { command: "store", description: "Connect Albert Heijn (admin, private chat)" },
+  { command: "store", description: "Connect a store, e.g. /store ah (admin, private chat)" },
   { command: "help", description: "How to use me" },
   { command: "reset", description: "Forget the conversation context" },
   { command: "id", description: "Show my Telegram id" },

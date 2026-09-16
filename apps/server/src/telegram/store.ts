@@ -1,10 +1,25 @@
-// The guided Albert Heijn login, driven from a private chat with the admin.
-// The bot never sees the password: the user logs in on AH's own page, is
-// redirected to appie://login-exit?code=..., and pastes that URL back here.
+// Guided store login, driven from a private chat with the admin. Store-aware so
+// new stores (bol.com, Amazon) slot in beside Albert Heijn. For AH the bot never
+// sees the password: the user logs in on AH's own page, is redirected to
+// appie://login-exit?code=..., and pastes that URL back here.
 
 import { AH_AUTHORIZE_URL, accountStatus, connectWithCode, disconnect } from "@shopai/capability-store";
 import type { Db } from "@shopai/db";
 import type { BotContext } from "./bot.js";
+
+interface StoreDef {
+  key: string;
+  name: string;
+  /** Whether a login flow exists yet. */
+  connectable: boolean;
+}
+
+// Order = display order in the menu. Add bol/amazon here when their connectors land.
+export const STORES: StoreDef[] = [
+  { key: "ah", name: "Albert Heijn", connectable: true },
+  { key: "bol", name: "bol.com", connectable: false },
+  { key: "amazon", name: "Amazon.nl", connectable: false },
+];
 
 export interface StoreLoginDeps {
   db: Db;
@@ -12,76 +27,111 @@ export interface StoreLoginDeps {
   householdId: () => number;
 }
 
-// Admins in the middle of pasting a login code: telegram user id -> true.
-const awaitingCode = new Set<number>();
+// Admins mid-login: telegram user id -> store key they are connecting.
+const awaitingLogin = new Map<number, string>();
 
-export function isAwaitingCode(userId: number): boolean {
-  return awaitingCode.has(userId);
+function resolveStore(arg: string): StoreDef | undefined {
+  const a = arg.toLowerCase();
+  return STORES.find((s) => s.key === a || s.name.toLowerCase() === a || s.name.toLowerCase().startsWith(a));
+}
+
+async function showMenu(ctx: BotContext, deps: StoreLoginDeps): Promise<void> {
+  const lines = ["Stores:"];
+  for (const s of STORES) {
+    if (s.key === "ah") {
+      const st = await accountStatus(deps.db, deps.householdId());
+      lines.push(`• ${s.name} — ${st}  (connect: /store ah)`);
+    } else {
+      lines.push(`• ${s.name} — coming soon`);
+    }
+  }
+  lines.push("", "To connect a store: /store <name>, e.g. /store ah");
+  lines.push("Other: /store ah status, /store ah logout");
+  await ctx.reply(lines.join("\n"));
 }
 
 export async function handleStoreCommand(ctx: BotContext, deps: StoreLoginDeps): Promise<void> {
   if (ctx.member?.role !== "admin") {
-    await ctx.reply("Only an admin can connect the store.");
+    await ctx.reply("Only an admin can connect a store.");
     return;
   }
-  if (ctx.chat?.type !== "private") {
-    await ctx.reply("For security, connect the store in a private chat with me: open @" + (ctx.me?.username ?? "the bot") + " and send /store there.");
+  const parts = (ctx.match ?? "").toString().trim().split(/\s+/u).filter(Boolean);
+  if (parts.length === 0) {
+    await showMenu(ctx, deps);
     return;
   }
-  if (!deps.sessionSecret) {
-    await ctx.reply("Store login is disabled: SESSION_SECRET is not set on the server. Set it and restart, then try again.");
+  const store = resolveStore(parts[0]!);
+  if (!store) {
+    await ctx.reply(`Unknown store "${parts[0]}". Known: ${STORES.map((s) => s.key).join(", ")}.`);
     return;
   }
-  const arg = (ctx.match ?? "").toString().trim();
-  if (arg === "logout" || arg === "disconnect") {
-    await disconnect(deps.db, deps.householdId());
-    awaitingCode.delete(ctx.from!.id);
-    await ctx.reply("Albert Heijn disconnected. Your tokens were deleted.");
+  const sub = (parts[1] ?? "").toLowerCase();
+
+  if (!store.connectable) {
+    await ctx.reply(`${store.name} is not connectable yet — it's on the roadmap. For now I can search it once its connector ships.`);
     return;
   }
-  if (arg === "status") {
-    const s = await accountStatus(deps.db, deps.householdId());
-    await ctx.reply(`Albert Heijn: ${s}.`);
-    return;
+
+  // --- Albert Heijn ---
+  if (store.key === "ah") {
+    if (ctx.chat?.type !== "private") {
+      await ctx.reply(`For security, connect ${store.name} in a private chat with me: open @${ctx.me?.username ?? "the bot"} and send /store ah there.`);
+      return;
+    }
+    if (sub === "logout" || sub === "disconnect") {
+      await disconnect(deps.db, deps.householdId());
+      awaitingLogin.delete(ctx.from!.id);
+      await ctx.reply(`${store.name} disconnected. Your tokens were deleted.`);
+      return;
+    }
+    if (sub === "status") {
+      const s = await accountStatus(deps.db, deps.householdId());
+      await ctx.reply(`${store.name}: ${s}.`);
+      return;
+    }
+    if (!deps.sessionSecret) {
+      await ctx.reply("Store login is disabled: SESSION_SECRET is not set on the server. Set it and restart, then try again.");
+      return;
+    }
+    awaitingLogin.set(ctx.from!.id, "ah");
+    await ctx.reply(
+      [
+        `Let's connect ${store.name}. The bot never sees your password.`,
+        "",
+        "1. Open this link and log in to Albert Heijn:",
+        AH_AUTHORIZE_URL,
+        "",
+        "2. After login the page tries to open the AH app and shows an error or a blank page. That's expected.",
+        "3. Copy the full address it tried to open (it starts with appie://login-exit?code=...).",
+        "4. Paste that whole address here as your next message.",
+        "",
+        "Send /store ah status to check, or /store ah logout to cancel.",
+      ].join("\n"),
+      { link_preview_options: { is_disabled: true } },
+    );
   }
-  awaitingCode.add(ctx.from!.id);
-  await ctx.reply(
-    [
-      "Let's connect Albert Heijn. The bot never sees your password.",
-      "",
-      "1. Open this link and log in to Albert Heijn:",
-      AH_AUTHORIZE_URL,
-      "",
-      "2. After login the page tries to open the AH app and shows an error or a blank page. That's expected.",
-      "3. Copy the full address it tried to open (it starts with appie://login-exit?code=...). On a phone, long-press the link or copy from the address bar.",
-      "4. Paste that whole address here as your next message.",
-      "",
-      "Send /store status to check, or /store logout to cancel.",
-    ].join("\n"),
-    { link_preview_options: { is_disabled: true } },
-  );
 }
 
 /** Returns true if the message was consumed as a pasted login code. */
 export async function maybeConsumeCode(ctx: BotContext, deps: StoreLoginDeps): Promise<boolean> {
   const uid = ctx.from?.id;
-  if (!uid || !awaitingCode.has(uid) || ctx.chat?.type !== "private") return false;
+  if (!uid || !awaitingLogin.has(uid) || ctx.chat?.type !== "private") return false;
+  const store = awaitingLogin.get(uid)!;
   const text = ctx.message?.text ?? "";
+  if (text.startsWith("/")) return false; // let commands through (e.g. /store ah logout)
   if (!/code=/u.test(text) && !/^[A-Za-z0-9._-]{16,}$/u.test(text.trim())) {
-    // Not a code; let normal handling take over (e.g. they typed /store logout).
-    if (text.startsWith("/")) return false;
-    await ctx.reply("That doesn't look like the login address. It should contain 'code='. Paste the full appie://login-exit?code=... address, or send /store logout to cancel.");
+    await ctx.reply("That doesn't look like the login address. It should contain 'code='. Paste the full appie://login-exit?code=... address, or send /store ah logout to cancel.");
     return true;
   }
-  awaitingCode.delete(uid);
+  awaitingLogin.delete(uid);
   try {
+    if (store !== "ah") throw new Error(`no login handler for ${store}`);
     if (!deps.sessionSecret) throw new Error("SESSION_SECRET not set");
     await connectWithCode({ db: deps.db, sessionSecret: deps.sessionSecret }, deps.householdId(), text);
-    // Delete the message with the code so it does not linger in the chat.
     await ctx.api.deleteMessage(ctx.chat!.id, ctx.message!.message_id).catch(() => {});
     await ctx.reply("✅ Albert Heijn connected. I can now add products to your AH shopping list after you confirm. You still check out yourself in the AH app.");
   } catch (err) {
-    await ctx.reply(`Could not connect: ${err instanceof Error ? err.message : "unknown error"}. Run /store to try again.`);
+    await ctx.reply(`Could not connect: ${err instanceof Error ? err.message : "unknown error"}. Run /store ah to try again.`);
   }
   return true;
 }
