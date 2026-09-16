@@ -199,16 +199,18 @@ docker compose --env-file ../.env exec postgres psql -U shopai -d shopai
 docker compose --env-file ../.env exec -T postgres pg_dump -U shopai -Fc shopai > /opt/shopai/backups/shopai-$(date +%F).dump
 ```
 
-**Web page and tunnel** (Phase 3): once `/opt/shopai/cloudflared/` holds
-`cert.pem` and `<tunnel-id>.json`, write `config.yml` there:
+**Web page and tunnel**: done on 2026-09-16. Tunnel `shopai`
+(id `7cb4f7f1-7613-4654-85e1-b3747c06a90e`) routes `shop.chern.nl` to
+`http://server:3000`. Files live in `/opt/shopai/cloudflared/`
+(`cert.pem`, `<tunnel-id>.json`, `config.yml`, owner uid 65532), and the
+`cloudflared` service runs under compose profile `web`. It reconnects by
+itself; nothing to re-authorise. Verify with:
 
-```yaml
-tunnel: <tunnel-id>
-credentials-file: /etc/cloudflared/<tunnel-id>.json
-ingress:
-  - hostname: shop.chern.nl
-    service: http://server:3000
-  - service: http_status:404
+```bash
+curl -s https://shop.chern.nl/healthz
 ```
 
-and start it with `docker compose --env-file ../.env --profile web up -d`.
+Right now that endpoint returns health JSON; the actual family web UI is
+built in Phase 3 and will be served on the same hostname. To manage the
+tunnel later, run cloudflared with the creds dir mounted, e.g.
+`docker run --rm -v /opt/shopai/cloudflared:/home/nonroot/.cloudflared cloudflare/cloudflared tunnel info shopai`.

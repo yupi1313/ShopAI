@@ -46,6 +46,7 @@ Kept so the "neighbours untouched" claim is verifiable.
 | 2026-09-16 14:21 | `/opt/shopai/.env` (root, 600) copied from the PC | none |
 | 2026-09-16 14:26 | `deploy/deploy.sh`: code to `/opt/shopai/app`, compose project `shopai` with network `shopai`, images `postgres:16-alpine` + `shopai-server:latest` (built on the box, three attempts), volume `/opt/shopai/data/postgres`. No published ports. Free disk after: 7.1 GB | none; the compose project, network and volume are separate from `video` and `3x-ui` |
 | 2026-09-16 14:33 | Started a pull of `curlimages/curl` for a one-off health probe; not present afterwards (verified with `docker images`) | none |
+| 2026-09-16 14:39 | Cloudflare Tunnel `shopai` (id 7cb4f7f1-...) created after login; `shop.chern.nl` CNAME added by Cloudflare; `cloudflared` container started under compose profile `web`; login-loop artifacts removed. `https://shop.chern.nl/healthz` → 200. No inbound port opened | none |
 
 ## Consequences for ShopAI
 
