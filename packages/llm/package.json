@@ -16,10 +16,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+    "test": "tsx --test src/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }
 }

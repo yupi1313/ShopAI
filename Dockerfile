@@ -1,22 +1,28 @@
-# ShopAI server image. Multi-stage: build the pnpm workspace, keep only prod deps.
+# ShopAI server image. Multi-stage: build the pnpm workspace with dev deps,
+# then install production deps only into a clean runtime layer. (pnpm prune
+# in a workspace drops per-project node_modules links, so it is not used.)
 FROM node:22-alpine AS base
 RUN corepack enable && corepack prepare pnpm@11.5.1 --activate
+ENV CI=true
 WORKDIR /app
 
 FROM base AS build
-# pnpm prune refuses to purge node_modules without a TTY unless it thinks it is in CI.
-ENV CI=true
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
 RUN pnpm install --frozen-lockfile
 RUN pnpm -r build
-RUN pnpm prune --prod
+# Drop every node_modules and the sources; the runtime stage re-installs prod deps.
+RUN find . -name node_modules -type d -prune -exec rm -rf {} + \
+ && find . -path ./node_modules -prune -o -type d -name src -prune -exec rm -rf {} + \
+ && find . -name "*.test.js" -delete
 
 FROM base AS runtime
 ENV NODE_ENV=production
 ENV LIVENESS_FILE=/tmp/shopai-alive
 COPY --from=build /app /app
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts \
+ && rm -rf /root/.cache /root/.local/share/pnpm/store 2>/dev/null || true
 RUN chown -R node:node /app
 USER node
 WORKDIR /app/apps/server
