@@ -4,10 +4,12 @@
 import {
   bigint,
   bigserial,
+  boolean,
   integer,
   jsonb,
   numeric,
   pgTable,
+  primaryKey,
   serial,
   text,
   timestamp,
@@ -170,6 +172,97 @@ export const pendingActions = pgTable("pending_actions", {
   args: jsonb("args").$type<Record<string, unknown>>().notNull(),
   status: text("status").$type<"pending" | "confirmed" | "cancelled" | "expired">().notNull().default("pending"),
 });
+
+export const storeAccounts = pgTable(
+  "store_accounts",
+  {
+    id: serial("id").primaryKey(),
+    householdId: integer("household_id")
+      .notNull()
+      .references(() => households.id),
+    store: text("store").notNull().default("ah"),
+    label: text("label"),
+    encTokens: text("enc_tokens"),
+    status: text("status").$type<"disconnected" | "connected" | "expired">().notNull().default("disconnected"),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("store_accounts_household_store_uq").on(t.householdId, t.store)],
+);
+
+export const products = pgTable(
+  "products",
+  {
+    store: text("store").notNull(),
+    productId: text("product_id").notNull(),
+    title: text("title").notNull(),
+    brand: text("brand"),
+    size: text("size"),
+    price: numeric("price", { precision: 12, scale: 2 }),
+    priceBeforeBonus: numeric("price_before_bonus", { precision: 12, scale: 2 }),
+    unitPrice: text("unit_price"),
+    isBonus: boolean("is_bonus").notNull().default(false),
+    bonusUntil: text("bonus_until"),
+    category: text("category"),
+    imageUrl: text("image_url"),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.store, t.productId] })],
+);
+
+export const productAliases = pgTable(
+  "product_aliases",
+  {
+    id: serial("id").primaryKey(),
+    householdId: integer("household_id")
+      .notNull()
+      .references(() => households.id),
+    nameNorm: text("name_norm").notNull(),
+    store: text("store").notNull().default("ah"),
+    productId: text("product_id").notNull(),
+    source: text("source").$type<"human" | "order" | "llm">().notNull().default("llm"),
+    locked: boolean("locked").notNull().default(false),
+    score: integer("score").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("product_aliases_uq").on(t.householdId, t.store, t.nameNorm)],
+);
+
+export const purchases = pgTable(
+  "purchases",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    householdId: integer("household_id")
+      .notNull()
+      .references(() => households.id),
+    store: text("store").notNull().default("ah"),
+    externalId: text("external_id"),
+    boughtAt: timestamp("bought_at", { withTimezone: true }).notNull(),
+    channel: text("channel"),
+    total: numeric("total", { precision: 12, scale: 2 }),
+    importedAt: timestamp("imported_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("purchases_external_uq").on(t.householdId, t.store, t.externalId)],
+);
+
+export const purchaseItems = pgTable("purchase_items", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  purchaseId: bigint("purchase_id", { mode: "number" })
+    .notNull()
+    .references(() => purchases.id, { onDelete: "cascade" }),
+  nameRaw: text("name_raw").notNull(),
+  nameNorm: text("name_norm").notNull(),
+  productId: text("product_id"),
+  brand: text("brand"),
+  qty: numeric("qty", { precision: 12, scale: 3 }),
+  unit: text("unit"),
+  price: numeric("price", { precision: 12, scale: 2 }),
+});
+
+export type StoreAccount = typeof storeAccounts.$inferSelect;
+export type ProductRow = typeof products.$inferSelect;
+export type ProductAlias = typeof productAliases.$inferSelect;
 
 export type Household = typeof households.$inferSelect;
 export type Member = typeof members.$inferSelect;

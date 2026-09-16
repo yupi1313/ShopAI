@@ -28,6 +28,9 @@ const EnvSchema = z.object({
   HTTP_PORT: z.coerce.number().int().positive().default(3000),
   NICKNAMES: z.string().default("shopai,шопаи,шоппер,шон"),
   LIVENESS_FILE: z.string().default("/tmp/shopai-alive"),
+  // Encrypts store tokens at rest. Required once a store is connected; if unset
+  // the stack still boots and store features stay disabled.
+  SESSION_SECRET: z.string().min(16).optional(),
   ZAGI_BASE_URL: z.string().optional(),
   ZAGI_API_KEY: z.string().optional(),
   ZAGI_MODEL: z.string().optional(),

@@ -1,27 +1,29 @@
 {
-  "name": "@shopai/server",
+  "name": "@shopai/capability-store",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ShopAI runtime: Telegram bot (grammY), agent wiring, HTTP health/web, scheduler",
+  "description": "Store capability: Albert Heijn search, product matching, shopping-list fill, purchase learning",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@shopai/capability-grocery": "workspace:*",
-    "@shopai/capability-store": "workspace:*",
     "@shopai/connector-ah": "workspace:*",
     "@shopai/core": "workspace:*",
     "@shopai/db": "workspace:*",
     "@shopai/llm": "workspace:*",
-    "dotenv": "^16.4.5",
-    "fastify": "^5.3.0",
-    "grammy": "^1.36.0",
-    "pino": "^9.7.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {

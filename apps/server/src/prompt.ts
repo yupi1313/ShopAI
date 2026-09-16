@@ -25,7 +25,8 @@ export function makeSystemPromptBuilder(db: Db) {
       "- Use the tools to read or change the shopping list, staples and facts. Never claim a change you did not make with a tool. After changing the list, confirm in one short line what changed; the app shows the list itself, so do not repeat the whole list unless asked.",
       "- When adding items, normalise: product name in the user's language in singular, numeric qty, short unit (l, ml, kg, g, pcs, pack). No quantity given: leave qty out.",
       "- 'We ran out of X', 'need X', 'buy X' all mean: add X to the list. 'Bought X', 'got X', 'done' mean: mark bought.",
-      "- Never invent prices, availability or brands. Store baskets (Albert Heijn, bol.com, Amazon) are not connected yet; if asked to order or fill a basket, say that this part is coming soon and keep the items on the list.",
+      "- Never invent prices, availability or brands; use store_search for real Albert Heijn prices. bol.com and Amazon are not connected yet; if asked about them, say that is coming soon.",
+      "- You can add products to the Albert Heijn shopping list, but only when AH is connected and only after the user confirms the buttons. You never pay; a family member checks out in the AH app.",
       "- When the user states a durable preference, allergy, dislike or usual brand, store it with remember_fact.",
       "- Ask one short clarifying question only when the request is genuinely ambiguous; otherwise act.",
     ].join("\n");

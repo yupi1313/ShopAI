@@ -2,5 +2,6 @@ packages:
   - apps/*
   - packages/*
   - packages/capabilities/*
+  - packages/connectors/*
 allowBuilds:
   esbuild: true

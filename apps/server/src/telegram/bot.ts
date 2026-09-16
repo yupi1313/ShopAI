@@ -22,11 +22,13 @@ import {
   setStatus,
   touchStaples,
 } from "@shopai/capability-grocery";
+import { InlineKeyboard } from "grammy";
 import type { AppConfig } from "./../config.js";
 import type { AppLogger } from "./../logger.js";
 import { pickLang, t, type Lang } from "./../i18n.js";
 import { listKeyboard } from "./keyboard.js";
 import { reloadHousehold } from "./../bootstrap.js";
+import { handleStoreCommand, maybeConsumeCode, type StoreLoginDeps } from "./store.js";
 
 export type BotContext = Context & {
   member?: Member;
@@ -52,6 +54,7 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
 
   const chatKeyOf = (chatId: number) => `tg:${chatId}`;
   const nicknames = () => household.settings.nicknames ?? cfg.nicknames;
+  const storeLoginDeps: StoreLoginDeps = { db, sessionSecret: cfg.SESSION_SECRET, householdId: () => household.id };
 
   async function refreshHousehold(): Promise<Household> {
     household = await reloadHousehold(db, household.id);
@@ -181,6 +184,8 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     await clearTurns(db, chatKeyOf(ctx.chat.id));
     await ctx.reply(t(ctx.lang).resetDone);
   });
+  bot.command("store", (ctx) => handleStoreCommand(ctx, storeLoginDeps));
+
   bot.command("staples", async (ctx) => {
     const s = t(ctx.lang);
     const rows = await listStaples(db, household.id);
@@ -282,11 +287,44 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     await renderList(ctx, "edit");
   });
 
+  // Confirm / cancel a queued shop action (basket_add, basket_fill_from_list).
+  bot.callbackQuery(/^pa:(c|x):(.+)$/u, async (ctx) => {
+    if (!ctx.member || !deps.agent) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    const kind = ctx.match[1];
+    const id = ctx.match[2]!;
+    if (kind === "x") {
+      await deps.agent.cancelPending(id);
+      await ctx.answerCallbackQuery({ text: "Cancelled" }).catch(() => {});
+      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+      await ctx.reply("Okay, cancelled.");
+      return;
+    }
+    await ctx.answerCallbackQuery({ text: "Working…" }).catch(() => {});
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    try {
+      const res = await deps.agent.confirmPending(id, toolCtx(ctx));
+      if (!res.ok) {
+        await ctx.reply(`Could not do it: ${res.reason ?? "action failed"}.`);
+        return;
+      }
+      await ctx.reply(`✅ Done.\n${summariseShopResult(res.tool, res.result)}`);
+      if (res.tool === "basket_fill_from_list") await renderList(ctx, "send");
+    } catch (err) {
+      log.error({ err, id }, "confirm failed");
+      await ctx.reply("Something went wrong doing that. Try again.");
+    }
+  });
+
   // ---- free text -> agent ----
   bot.on("message:text", async (ctx) => {
     if (!ctx.member) return;
     const text = ctx.message.text.trim();
     if (!text || text.startsWith("/")) return;
+    // A pasted AH login code in a private chat is consumed before the agent.
+    if (await maybeConsumeCode(ctx, storeLoginDeps)) return;
     const isPrivate = ctx.chat.type === "private";
     if (!isPrivate) {
       const replyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
@@ -305,10 +343,13 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
       try {
         const out = await agent.run({ ctx: toolCtx(ctx), userText: text });
         const replyOpts = isPrivate ? {} : { reply_parameters: { message_id: ctx.message.message_id } };
-        for (const chunk of chunkText(out.text, 4000)) {
-          await ctx.reply(chunk, replyOpts);
+        const chunks = chunkText(out.text, 4000);
+        for (let i = 0; i < chunks.length; i++) {
+          const lastChunk = i === chunks.length - 1;
+          const kb = lastChunk ? pendingKeyboard(out.pending) : undefined;
+          await ctx.reply(chunks[i]!, { ...replyOpts, ...(kb ? { reply_markup: kb } : {}) });
         }
-        if (out.toolsUsed.some((n) => LIST_MUTATING_TOOLS.has(n))) {
+        if (out.pending.length === 0 && out.toolsUsed.some((n) => LIST_MUTATING_TOOLS.has(n))) {
           await renderList(ctx, "send");
         }
         log.info({ chatKey: key, tools: out.toolsUsed, rounds: out.rounds }, "agent turn done");
@@ -337,10 +378,39 @@ export const BOT_COMMANDS = [
   { command: "list", description: "Show the shopping list" },
   { command: "done", description: "Everything bought" },
   { command: "staples", description: "Regular purchases" },
+  { command: "store", description: "Connect Albert Heijn (admin, private chat)" },
   { command: "help", description: "How to use me" },
   { command: "reset", description: "Forget the conversation context" },
   { command: "id", description: "Show my Telegram id" },
 ];
+
+function pendingKeyboard(pending: Array<{ id: string; tool: string; args: Record<string, unknown> }>): InlineKeyboard | undefined {
+  if (pending.length === 0) return undefined;
+  const kb = new InlineKeyboard();
+  for (const p of pending) {
+    const label = p.tool === "basket_fill_from_list" ? "🧺 Fill AH basket" : p.tool === "basket_add" ? "🧺 Add to AH basket" : "Confirm";
+    kb.text(`✅ ${label}`, `pa:c:${p.id}`).text("✖", `pa:x:${p.id}`).row();
+  }
+  return kb;
+}
+
+function summariseShopResult(tool: string | undefined, result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const r = result as Record<string, unknown>;
+  if (tool === "basket_add" && typeof r.added === "string") return `Added ${r.added}${r.qty ? ` ×${String(r.qty)}` : ""} to your AH shopping list.`;
+  if (tool === "basket_fill_from_list") {
+    const added = Array.isArray(r.added) ? (r.added as string[]) : [];
+    const need = Array.isArray(r.needChoice) ? (r.needChoice as string[]) : [];
+    const notFound = Array.isArray(r.notFound) ? (r.notFound as string[]) : [];
+    const parts: string[] = [];
+    if (added.length) parts.push(`Added to AH list:\n${added.map((a) => `• ${a}`).join("\n")}`);
+    if (need.length) parts.push(`Need you to choose: ${need.join(", ")}`);
+    if (notFound.length) parts.push(`Not found: ${notFound.join(", ")}`);
+    parts.push("Open the AH app to review and check out. I never pay.");
+    return parts.join("\n\n");
+  }
+  return "";
+}
 
 function chunkText(text: string, max: number): string[] {
   if (text.length <= max) return [text];

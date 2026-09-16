@@ -2,6 +2,7 @@ import { createDb, runMigrations } from "@shopai/db";
 import { createZagiClient, zagiConfigFromEnv } from "@shopai/llm";
 import { Agent } from "@shopai/core";
 import { groceryCapability } from "@shopai/capability-grocery";
+import { createStoreCapability } from "@shopai/capability-store";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { ensureAdmin, ensureHousehold } from "./bootstrap.js";
@@ -25,12 +26,19 @@ async function main(): Promise<void> {
   log.info({ household: household.name, id: household.id }, "household ready");
 
   const zagiCfg = zagiConfigFromEnv();
-  const agent = zagiCfg
+  const llm = zagiCfg ? createZagiClient(zagiCfg) : null;
+  const capabilities = [groceryCapability];
+  if (cfg.SESSION_SECRET) {
+    capabilities.push(createStoreCapability({ sessionSecret: cfg.SESSION_SECRET, llm }));
+  } else {
+    log.warn("SESSION_SECRET not set: Albert Heijn store features are disabled");
+  }
+  const agent = llm
     ? new Agent({
-        llm: createZagiClient(zagiCfg),
+        llm,
         db: handle.db,
         log,
-        capabilities: [groceryCapability],
+        capabilities,
         buildSystemPrompt: makeSystemPromptBuilder(handle.db),
       })
     : null;

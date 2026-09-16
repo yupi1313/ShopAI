@@ -8,9 +8,9 @@ import {
   type ChatMessage,
   type ZagiClient,
 } from "@shopai/llm";
-import { llmCalls, pendingActions, type Db, type StoredTurn } from "@shopai/db";
+import { and, eq, llmCalls, pendingActions, type Db, type StoredTurn } from "@shopai/db";
 import type { Capability, Logger, ToolContext } from "./types.js";
-import { ToolRegistry, compactJson } from "./tools.js";
+import { ToolRegistry, compactJson, type ToolExecution } from "./tools.js";
 import { appendTurns, loadTurns } from "./memory.js";
 
 export const MAX_TOOL_ROUNDS = 8;
@@ -157,6 +157,33 @@ export class Agent {
     await appendTurns(db, ctx.household.id, ctx.chatKey, newTurns);
 
     return { text: finalText, toolsUsed, pending, rounds: rounds + 1 };
+  }
+
+  /** Run a queued shop action after a human confirmed it. Idempotent per row. */
+  async confirmPending(id: string, ctx: ToolContext): Promise<{ ok: boolean; tool?: string; result?: unknown; reason?: string }> {
+    const rows = await this.deps.db
+      .update(pendingActions)
+      .set({ status: "confirmed" })
+      .where(and(eq(pendingActions.id, id), eq(pendingActions.status, "pending")))
+      .returning();
+    const row = rows[0];
+    if (!row) return { ok: false, reason: "already handled or unknown" };
+    if (row.expiresAt.getTime() < Date.now()) {
+      await this.deps.db.update(pendingActions).set({ status: "expired" }).where(eq(pendingActions.id, id));
+      return { ok: false, reason: "expired" };
+    }
+    const exec: ToolExecution = await this.registry.execute(row.tool, JSON.stringify(row.args), ctx);
+    this.deps.log.info({ tool: row.tool, ok: exec.ok, ms: exec.ms }, "confirmed action executed");
+    return { ok: exec.ok, tool: row.tool, result: exec.result };
+  }
+
+  async cancelPending(id: string): Promise<boolean> {
+    const rows = await this.deps.db
+      .update(pendingActions)
+      .set({ status: "cancelled" })
+      .where(and(eq(pendingActions.id, id), eq(pendingActions.status, "pending")))
+      .returning({ id: pendingActions.id });
+    return rows.length > 0;
   }
 
   private async composeSystemPrompt(ctx: ToolContext): Promise<string> {
