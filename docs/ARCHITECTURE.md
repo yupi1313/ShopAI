@@ -18,13 +18,16 @@ open items are in section 16.
 | Date | Decision |
 | --- | --- |
 | 2026-09-16 | Grocery store is **Albert Heijn** (Netherlands). Login is account + password; exact flow verified in Phase 0 recon (section 8). |
-| 2026-09-16 | **bol.com** and **Amazon.nl** are supported for **non-grocery product search** (find, compare, link). Basket filling there is out of scope for now. |
+| 2026-09-16 | **bol.com** and **Amazon.nl** are supported for non-grocery products **including basket filling**. Research (section 8) found no official consumer API or MCP server for either; Amazon has an official multi-item add-to-cart link, bol.com does not. |
 | 2026-09-16 | **The bot never pays.** It fills the AH basket and posts a checkout link; a human pays. |
 | 2026-09-16 | **Purchase history is monitored** (AH online orders and, if the API allows, in-store receipts) so "buy pasta" resolves to the brand and size the family actually buys. |
 | 2026-09-16 | ZAGI credentials: **reuse the shared key** already used by Oddzilla and other projects. |
 | 2026-09-16 | Telegram: **group chats and private chats** both supported. A **web page** is the second interface. |
 | 2026-09-16 | Stack: **TypeScript everywhere, Postgres** (recommendation accepted pending your reply, rationale in section 4). |
-| 2026-09-16 | Git initialised locally on `main`; remote to be created by you. |
+| 2026-09-16 | Git on `main`, remote `https://github.com/yupi1313/ShopAI`. Commits and pushes as GitHub user **yupi1313** (repo-local identity; yupi1313 is the active `gh` account on the PC). |
+| 2026-09-16 | Web page hostname **shop.chern.nl** (proposed). Registrar is Porkbun but DNS is delegated to **Cloudflare**, so records are managed in Cloudflare and exposure is via **Cloudflare Tunnel** (section 10). |
+| 2026-09-16 | In group chats the bot reacts only when **@mentioned, replied to, or called by a nickname**: `shopai`, `шопаи`, `шоппер`, `шон`. The nickname list is admin-editable and will grow. |
+| 2026-09-16 | Server access: dedicated key `~/.ssh/shopai_ed25519` generated on the PC; **awaiting authorisation** on the box (root and ubuntu currently refuse every key present). |
 
 ---
 
@@ -39,7 +42,8 @@ open items are in section 16.
 - Fill the AH basket from the list with the **right** products, learned from
   what the family really buys.
 - Find non-grocery items on bol.com and Amazon.nl: "find a 2 m USB-C cable",
-  "cheapest air fryer under 100 euro", with links and a price comparison.
+  "cheapest air fryer under 100 euro", with a price comparison, and put the
+  chosen item in the basket there too.
 - Reminders: staples due, weekly planning nudge, basket left unpaid, bonus
   offers on things the family buys.
 - Room to grow into new **capabilities** (trip planning, other shops)
@@ -226,6 +230,8 @@ reply shows the result with undo buttons.
 | `grocery.basket_fill_from_list` | **shop** | deterministic pipeline with full pick list before confirm |
 | `grocery.purchases_recent(n)`, `grocery.purchases_of(item)` | none | "what did we buy last time", "which pasta do we buy" |
 | `market.search(query, sites?)`, `market.product(url)`, `market.compare(query)` | none | bol.com and Amazon.nl cards with price, rating, link |
+| `market.amazon_cart_link(items[])` | none (link only) | official multi-ASIN add-to-cart URL; the human taps it and the items land in their Amazon cart |
+| `market.bol_basket_add(product_id, qty)` | **shop**, experimental | browser automation on the family's bol account, behind confirm; only if the recon in Phase 0 finds no link-based route |
 | `market.watch(url, target_price)` | none | price alert job |
 
 Tool outputs are capped in size (top 5 products, trimmed fields) so prompts
@@ -275,28 +281,60 @@ a private API, so the connector is written to fail loud and idle gracefully
 (store tools disappear from the model, list features keep working) rather
 than retry blindly.
 
-### bol.com and Amazon.nl (marketplace, search only)
+### bol.com and Amazon.nl (marketplace, search + basket)
 
-Neither offers a usable public product API for this use case: Amazon's
-Product Advertising API requires an affiliate account with qualifying
-sales, and bol.com retired its open partner API. So both connectors read
-the public web:
+**What the research found (2026-09-16).** Neither site has an official
+consumer-side API or MCP server. Amazon's official MCP servers cover AWS
+and the Selling Partner API (sellers), not shopping. Every "Amazon shopping
+MCP" on GitHub is third-party and drives a logged-in consumer account
+through unofficial means, which Amazon's conditions of use forbid and which
+Amazon has litigated against (the Perplexity Comet case). bol.com offers
+only the Retailer API and Advertising API for sellers; the third-party
+`bol-mcp` wraps the Retailer API. Neither site is on the Agentic Commerce
+Protocol (OpenAI + Stripe) as of now. Amazon's Product Advertising API 5 is
+deprecated in favour of the **Creators API** (affiliates only, catalogue
+data, no cart operations).
 
-- **HTTP first.** Fetch the search and product pages with a browser-like
-  client and extract structured data (JSON-LD, embedded state). bol.com is
-  usually cooperative this way.
-- **Playwright fallback.** Amazon.nl frequently challenges plain fetches.
-  A single shared headless Chromium with a persistent profile, concurrency
-  1, is used only when HTTP extraction fails. It costs 400 to 500 MB RAM
-  while running and is killed when idle.
+**Search and compare** therefore read the public web:
+
+- **HTTP first.** Fetch search and product pages with a browser-like client
+  and extract structured data (JSON-LD, embedded state). bol.com is usually
+  cooperative this way.
+- **Playwright fallback.** Amazon.nl frequently challenges plain fetches. A
+  single shared headless Chromium with a persistent profile, concurrency 1,
+  is used only when HTTP extraction fails. It costs 400 to 500 MB RAM while
+  running and is killed when idle.
 - **Output:** normalised product cards (title, price, unit price where
   present, rating, seller, delivery hint, deep link). `market.compare` runs
   both and lets the model present a short comparison.
-- **Expectation:** marketplace scraping is best effort and will need
-  occasional maintenance. The design isolates it so a broken extractor
+- **Expectation:** best effort, occasional maintenance. A broken extractor
   degrades to "could not read Amazon right now", never to a crash.
-- **Not in scope now:** adding to bol or Amazon baskets. The deep link
-  opens the product page; the human buys.
+
+**Basket filling, per site:**
+
+- **Amazon.nl: official add-to-cart link.** Amazon documents a form URL
+  that adds any number of items to the cart of whoever opens it:
+  `https://www.amazon.nl/gp/aws/cart/add.html?ASIN.1=<asin>&Quantity.1=1&ASIN.2=<asin>&Quantity.2=2`
+  (an `AssociateTag` is only needed for affiliate attribution). The bot
+  keeps a pending Amazon cart in its own database, and "put it in the
+  Amazon basket" produces one link. A family member taps it on their phone,
+  is already logged in, and the items appear in their cart; they check out
+  themselves. No credentials, no automation of the account, fully within
+  Amazon's rules. This is the same "bot fills, human pays" boundary as AH,
+  with the tap standing in for the API call.
+- **bol.com: no sanctioned route today.** The current affiliate programme
+  documents product links only. An older partner-link format described a
+  basket link type (`t=bst`, `f=SCL` with a product id); whether it still
+  works is **tested in Phase 0** with a real browser. If it does, bol gets
+  the same link-based flow as Amazon. If not, two options, in this order:
+  1. product deep links with a per-item "add to basket" tap in the bol app
+     (one tap per item, no risk);
+  2. **opt-in browser automation** of the family's bol account with a
+     persistent Playwright profile on the server, logged in once by a
+     human, every add behind the confirm gate. Brittle, subject to bol's
+     device-verification emails, and a terms-of-use grey zone. Built only
+     if you accept that and only after everything else works.
+- **Not done anywhere:** payment, checkout, or storing card data.
 
 ### Connector contracts
 
@@ -320,6 +358,8 @@ interface Marketplace {
   readonly kind: "bol" | "amazon_nl";
   search(query: string, opts?: { limit?: number; maxPrice?: number }): Promise<MarketProduct[]>;
   product(url: string): Promise<MarketProductDetail>;
+  cartLink?(items: Array<{ id: string; qty: number }>): string;   // Amazon: official add-to-cart URL; bol: if the legacy basket link still works
+  basketAdd?(id: string, qty: number): Promise<void>;             // bol only, experimental browser automation, behind confirm
 }
 ```
 
@@ -362,14 +402,22 @@ This is what turns "buy pasta" into the right pasta.
   one-time link valid 10 minutes; opening it sets a long-lived session
   cookie tied to that member. Identity stays anchored in the Telegram
   allowlist; no passwords, no Telegram Login Widget domain setup needed.
-- **Exposure, in order of preference** (decided in Phase 0 once we see the
-  box):
-  1. **Cloudflare Tunnel** if you have a domain on Cloudflare: no inbound
-     port, automatic HTTPS on a subdomain, optional Cloudflare Access on
-     top. Zero interaction with the neighbour's ports.
-  2. **Tailscale** for family devices only, no public exposure at all.
-  3. **Own Caddy on a high port** with a DNS-01 certificate, if neither of
-     the above and a domain exists. Still touches nothing of the neighbour.
+- **Exposure: Cloudflare Tunnel on `shop.chern.nl`.** The domain
+  `chern.nl` is registered at Porkbun, but its nameservers are
+  `ignat.ns.cloudflare.com` and `tia.ns.cloudflare.com`, so **DNS is
+  managed in Cloudflare, not Porkbun**, and the apex is already proxied
+  through Cloudflare. A `cloudflared` container in our compose stack dials
+  out to Cloudflare; the tunnel's public hostname `shop.chern.nl` is routed
+  to `http://server:3000` on the internal docker network. Cloudflare
+  creates the CNAME record itself when the hostname is added, so there is
+  nothing to change at Porkbun and no manual DNS record to add. Result: no
+  inbound port, no certificate to manage, no contact with the neighbour's
+  ports. Optional second lock: a Cloudflare Access policy allowing only the
+  family's e-mail addresses. Steps are in `docs/OPERATIONS.md`.
+- **Fallback** if a tunnel is ever unwanted: an `A` record `shop` pointing
+  at `116.203.224.204` (plus `AAAA` for the server's IPv6), served by our
+  own Caddy. That requires ports 80/443 to be free on the box, which is
+  known only after recon, so the tunnel is the plan.
 
 ---
 
@@ -377,9 +425,15 @@ This is what turns "buy pasta" into the right pasta.
 
 - **Allowlist** of Telegram user ids, deny by default. Roles `admin` and
   `member`. Unknown users get one refusal and are logged.
-- **Group chats:** the bot acts on commands, mentions and replies to
-  itself. Optional per-group "listen mode" for phrases like "we're out of
-  X" can be switched on by the admin; default is off.
+- **Group chats:** the bot acts on commands, @mentions, replies to its own
+  messages, and messages that address it by a **nickname** anywhere in the
+  text: `shopai`, `шопаи`, `шоппер`, `шон` to start, matched
+  case-insensitively as whole words in Latin and Cyrillic, with the list
+  stored per household and editable by an admin (`/nicknames`). Everything
+  else in the group is ignored and never sent to the model. Nickname
+  detection requires Telegram's bot privacy mode to be **off** for this
+  bot, otherwise Telegram only delivers commands and mentions to it; that
+  is a BotFather setting, noted in `docs/OPERATIONS.md`.
 - **Secrets** (bot token, shared ZAGI key, Postgres password, session master
   key) live in `.env` with mode 600. AH tokens are encrypted at rest with
   libsodium secretbox under the master key.
@@ -441,9 +495,12 @@ one message: picks with reasons and prices, items needing a choice with
 keyboards, items not found → Confirm → adapter adds all → total and checkout
 link → human pays in the AH app. Unpaid next morning → one reminder.
 
-**Non-grocery.** "find a quiet 40 cm desk fan under 60 euro" →
+**Non-grocery.** "шон, find a quiet 40 cm desk fan under 60 euro" →
 `market.compare` → bol.com and Amazon.nl cards → short comparison with links
-→ optional `market.watch` for a price drop.
+→ "take the Amazon one" → `market.amazon_cart_link` → one tap on the phone
+puts it in the Amazon cart → human checks out. For bol: legacy basket link
+if it works, else product link plus one tap in the bol app. Optional
+`market.watch` for a price drop.
 
 **Weekly plan.** Sunday 18:00 nudge in the group → short conversation →
 `plan_set` → `plan_to_list` → "Fill basket" button.
@@ -487,11 +544,12 @@ re-proxied, and its ports are not reused.**
 
 | Phase | Scope | Value when done |
 | --- | --- | --- |
-| **0 - Recon** (half a day, needs SSH) | Server inventory; ZAGI tool-calling smoke test from the box; AH API recon (login exchange, search, detail, receipts, basket) with your account; BotFather bot; family Telegram ids | Go / no-go, `STORE-AH.md` written |
+| **0 - Recon** (half a day, needs SSH) | Server inventory; ZAGI tool-calling smoke test from the box; AH API recon (login exchange, search, detail, receipts, basket) with your account; test the Amazon add-to-cart link on amazon.nl and the legacy bol basket link in a real browser; BotFather bot with privacy mode off; family Telegram ids | Go / no-go, `STORE-AH.md` and `MARKETPLACES.md` written |
 | **1 - Household + list** (about 1 week) | Monorepo scaffold, Postgres, core agent, `grocery` list / staples / facts, Telegram group + private, Docker on the server | Family uses the list daily |
 | **2 - AH basket + learning** (1 to 2 weeks) | AH connector, purchase import, alias / brand model, matcher, fill pipeline with confirm gate, checkout link, bonus awareness | "Buy pasta" picks the right pasta and lands in the basket |
 | **3 - Web page** (about 1 week) | SPA, magic-link auth, tunnel or Tailscale exposure, chat box on the web | Second interface live |
-| **4 - Marketplace** (about 1 week) | bol.com and Amazon.nl connectors, `market.*` tools, compare, watchlist and price alerts | Non-grocery search and comparison |
+| **4 - Marketplace** (about 1 week) | bol.com and Amazon.nl connectors, `market.*` tools, compare, Amazon cart links, bol basket via link or one-tap product links, watchlist and price alerts | Non-grocery search, comparison and basket |
+| **4b - bol automation** (optional, 3 to 5 days) | Playwright profile on the server logged into the family's bol account, `market.bol_basket_add` behind confirm | Only if you accept the brittleness and the terms-of-use grey zone |
 | **5 - Planning** (about 1 week) | Meal plans, recipe book, weekly nudge, plan-to-list | The bot proposes, not only reacts |
 | **6 - Later** | Trips capability, other shops, voice (needs STT), photos (needs vision on the gateway), `pgvector` search | Growth |
 
@@ -499,18 +557,28 @@ Phases 3 and 4 can swap depending on what the family wants first.
 
 ---
 
-## 16. Open questions
+## 16. Open items
 
-1. **Server access.** SSH user and how you will hand over the key. Phase 0
-   cannot start without it.
-2. **Domain for the web page.** Do you have a domain, and is its DNS on
-   Cloudflare? That decides tunnel vs Tailscale vs own Caddy.
-3. **AH account.** Whose account will the bot use (one shared "Mijn AH"
+Actions on your side (exact steps in `docs/OPERATIONS.md`):
+
+1. **Authorise the SSH key** `shopai_ed25519` for `root` on the box.
+   Phase 0 cannot start without it.
+2. **Create the Cloudflare Tunnel** `shopai` with public hostname
+   `shop.chern.nl`, and keep its token for the server's `.env`.
+3. **Create the Telegram bot** in BotFather with privacy mode off, and keep
+   its token for the server's `.env`.
+
+Questions still open:
+
+4. **AH account.** Whose account will the bot use (one shared "Mijn AH"
    account is simplest), and is a Bonuskaart linked to it? That determines
    whether in-store receipts are available for learning.
-4. **Marketplaces.** Confirm search, compare and links are enough for
-   bol.com and Amazon.nl for now, with no basket filling there.
-5. **Group listen mode.** Should the bot, in the family group, react to
-   plain phrases like "we're out of eggs" without a mention? Default in
-   this plan is off until an admin switches it on per group.
-6. **Stack.** Confirm TypeScript + Postgres as argued in section 4.
+5. **Hostname.** `shop.chern.nl` is a proposal; say if you prefer another
+   name.
+6. **bol automation.** If the legacy basket link is dead, do you want the
+   opt-in browser automation of the family's bol account (Phase 4b), or is
+   product link plus one tap enough?
+7. **Amazon Creators API.** Only relevant if you have or want an Amazon
+   Associates account; it would give clean catalogue search instead of page
+   extraction. Not required.
+8. **Stack.** Confirm TypeScript + Postgres as argued in section 4.
