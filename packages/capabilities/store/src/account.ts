@@ -7,6 +7,8 @@ import {
   type AhTokens,
   type TokenSource,
 } from "@shopai/connector-ah";
+
+export { refreshTokens } from "@shopai/connector-ah";
 import { decryptSecret, encryptSecret } from "@shopai/core";
 import { and, eq, storeAccounts, type Db } from "@shopai/db";
 
@@ -78,6 +80,18 @@ export async function connectWithCode(deps: StoreDeps, householdId: number, past
   const code = extractCode(pasted);
   if (!code) throw new Error("no login code found in what you sent");
   const tokens = await exchangeCode(code, deps.fetchImpl);
+  await saveTokens(deps.db, householdId, deps.sessionSecret, tokens);
+}
+
+/**
+ * Connect using a refresh token captured from the AH app's traffic. Validates
+ * it by doing one refresh (which also yields an access token), then stores the
+ * result. This bypasses the browser OAuth flow entirely.
+ */
+export async function connectWithRefreshToken(deps: StoreDeps, householdId: number, refreshToken: string): Promise<void> {
+  const rt = refreshToken.trim();
+  if (rt.length < 12) throw new Error("that does not look like a refresh token");
+  const tokens = await refreshTokens(rt, deps.fetchImpl);
   await saveTokens(deps.db, householdId, deps.sessionSecret, tokens);
 }
 

@@ -3,7 +3,7 @@
 // sees the password: the user logs in on AH's own page, is redirected to
 // appie://login-exit?code=..., and pastes that URL back here.
 
-import { AH_AUTHORIZE_URL, accountStatus, connectWithCode, disconnect } from "@shopai/capability-store";
+import { AH_AUTHORIZE_URL, accountStatus, connectWithCode, connectWithRefreshToken, disconnect } from "@shopai/capability-store";
 import type { Db } from "@shopai/db";
 import type { BotContext } from "./bot.js";
 
@@ -98,12 +98,13 @@ export async function handleStoreCommand(ctx: BotContext, deps: StoreLoginDeps):
       [
         `Let's connect ${store.name}. The bot never sees your password.`,
         "",
-        "1. Open this link and log in to Albert Heijn:",
-        AH_AUTHORIZE_URL,
+        "Two ways — paste whichever you have as your next message:",
         "",
-        "2. After login the page tries to open the AH app and shows an error or a blank page. That's expected.",
-        "3. Copy the full address it tried to open (it starts with appie://login-exit?code=...).",
-        "4. Paste that whole address here as your next message.",
+        "A) A login code, if you can get one:",
+        AH_AUTHORIZE_URL,
+        "…log in, and if it redirects to appie://login-exit?code=… paste that whole address.",
+        "",
+        "B) A refresh token captured from the AH phone app (the reliable way). Paste the refresh_token value. I'll walk you through capturing it if you need.",
         "",
         "Send /store ah status to check, or /store ah logout to cancel.",
       ].join("\n"),
@@ -124,14 +125,18 @@ export async function maybeConsumeCode(ctx: BotContext, deps: StoreLoginDeps): P
     return true;
   }
   awaitingLogin.delete(uid);
+  const isCode = /code=/u.test(text) || /appie:\/\//u.test(text);
   try {
     if (store !== "ah") throw new Error(`no login handler for ${store}`);
     if (!deps.sessionSecret) throw new Error("SESSION_SECRET not set");
-    await connectWithCode({ db: deps.db, sessionSecret: deps.sessionSecret }, deps.householdId(), text);
+    const deps2 = { db: deps.db, sessionSecret: deps.sessionSecret };
+    if (isCode) await connectWithCode(deps2, deps.householdId(), text);
+    else await connectWithRefreshToken(deps2, deps.householdId(), text);
     await ctx.api.deleteMessage(ctx.chat!.id, ctx.message!.message_id).catch(() => {});
     await ctx.reply("✅ Albert Heijn connected. I can now add products to your AH shopping list after you confirm. You still check out yourself in the AH app.");
   } catch (err) {
-    await ctx.reply(`Could not connect: ${err instanceof Error ? err.message : "unknown error"}. Run /store ah to try again.`);
+    awaitingLogin.set(uid, "ah"); // stay in login mode so they can retry without re-running the command
+    await ctx.reply(`Could not connect: ${err instanceof Error ? err.message : "unknown error"}. Paste the code or refresh token again, or send /store ah logout to stop.`);
   }
   return true;
 }
