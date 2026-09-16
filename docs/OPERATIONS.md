@@ -80,21 +80,26 @@ the box and you would rather not use a tunnel): in Cloudflare DNS add
 `A shop 116.203.224.204` and `AAAA shop <server IPv6>` and the stack runs
 its own Caddy. Decided after recon.
 
-### 1.3 Telegram bot in BotFather
+### 1.3 Telegram bot — done
 
-1. Open `@BotFather` → `/newbot` → display name `ShopAI` → a username
-   ending in `bot`, e.g. `chern_shopai_bot`. Keep the token for
-   `/opt/shopai/.env` as `TELEGRAM_BOT_TOKEN`.
-2. `/setprivacy` → choose the bot → **Disable**. This is required: with
-   privacy mode on, Telegram delivers only commands and @mentions to a bot
-   in a group, so nicknames like `шон, добавь молоко` would never reach it.
-3. `/setjoingroups` → **Enable**. Then add the bot to the family group.
-4. `/setcommands` is done by the app itself on boot.
-5. Family Telegram user ids: each member sends `/start` to the bot once the
-   app runs; unknown ids are logged and an admin approves them with
-   `/members add <id>`. Your own id is put in `.env` as `ADMIN_TELEGRAM_ID`
-   so the first admin exists before anyone is approved. `@userinfobot`
-   shows an id if you want them in advance.
+The bot exists: **@CheShopBot** (bot id `8690959586`), created
+2026-09-16. Verified with `getMe`: `can_join_groups: true` and
+`can_read_all_group_messages: true`, so **privacy mode is already off** and
+nickname triggers in groups will work. No webhook is set; the app uses long
+polling.
+
+- The token is stored in the PC's local `D:\AI\ShopAI\.env` (gitignored,
+  never committed) and must be copied into `/opt/shopai/.env` as
+  `TELEGRAM_BOT_TOKEN` when the server stack is created.
+- If the token ever needs rotating: `@BotFather` → `/revoke` → pick the
+  bot, then update both `.env` files.
+- Add the bot to the family group once the app runs. `/setcommands` is done
+  by the app itself on boot.
+- Family Telegram user ids: each member sends `/start` to the bot; unknown
+  ids are logged and an admin approves them with `/members add <id>`. Your
+  own id goes into `.env` as `ADMIN_TELEGRAM_ID` so the first admin exists
+  before anyone is approved. `@userinfobot` shows an id if you want them in
+  advance.
 
 ---
 

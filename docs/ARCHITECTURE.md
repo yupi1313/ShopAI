@@ -27,7 +27,8 @@ open items are in section 16.
 | 2026-09-16 | Git on `main`, remote `https://github.com/yupi1313/ShopAI`. Commits and pushes as GitHub user **yupi1313** (repo-local identity; yupi1313 is the active `gh` account on the PC). |
 | 2026-09-16 | Web page hostname **shop.chern.nl** (proposed). Registrar is Porkbun but DNS is delegated to **Cloudflare**, so records are managed in Cloudflare and exposure is via **Cloudflare Tunnel** (section 10). |
 | 2026-09-16 | In group chats the bot reacts only when **@mentioned, replied to, or called by a nickname**: `shopai`, `шопаи`, `шоппер`, `шон`. The nickname list is admin-editable and will grow. |
-| 2026-09-16 | Server access: dedicated key `~/.ssh/shopai_ed25519` generated on the PC; **awaiting authorisation** on the box (root and ubuntu currently refuse every key present). |
+| 2026-09-16 | Server access: dedicated key `~/.ssh/shopai_ed25519` generated on the PC; **awaiting authorisation** on the box (root and ubuntu currently refuse every key present). The Hetzner key `lucky-deploy` should work per the user, but its private key was not found under that name on the PC. |
+| 2026-09-16 | Telegram bot is **@CheShopBot**; privacy mode already off; token kept in the local gitignored `.env`, to be copied to the server. |
 
 ---
 
@@ -565,8 +566,7 @@ Actions on your side (exact steps in `docs/OPERATIONS.md`):
    Phase 0 cannot start without it.
 2. **Create the Cloudflare Tunnel** `shopai` with public hostname
    `shop.chern.nl`, and keep its token for the server's `.env`.
-3. **Create the Telegram bot** in BotFather with privacy mode off, and keep
-   its token for the server's `.env`.
+3. ~~Create the Telegram bot~~ Done: @CheShopBot, privacy mode off.
 
 Questions still open:
 
