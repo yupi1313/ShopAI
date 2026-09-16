@@ -29,6 +29,7 @@ open items are in section 16.
 | 2026-09-16 | In group chats the bot reacts only when **@mentioned, replied to, or called by a nickname**: `shopai`, `шопаи`, `шоппер`, `шон`. The nickname list is admin-editable and will grow. |
 | 2026-09-16 | Server access: dedicated key `~/.ssh/shopai_ed25519` generated on the PC; **awaiting authorisation** on the box (root and ubuntu currently refuse every key present). The Hetzner key `lucky-deploy` should work per the user, but its private key was not found under that name on the PC. |
 | 2026-09-16 | Telegram bot is **@CheShopBot**; privacy mode already off; token kept in the local gitignored `.env`, to be copied to the server. |
+| 2026-09-16 | Server access works: `ssh shopai` (key `~/.ssh/ttplugin_deploy`, listed on the box as "claude-deploy"). Read-only recon done, see [SERVER-INVENTORY.md](./SERVER-INVENTORY.md): the box hosts **four** neighbours (3x-ui VPN, video/AceStream, cyclezilla, bbbr-api), nginx owns 80/443/8088/8443/8444, RAM has 2.3 GB free, **disk is 94 % full (4.5 GB free)**. Tunnel-only exposure confirmed; image build location to be decided (off-box vs pruning 3.3 GB of Docker build cache). |
 
 ---
 
@@ -519,11 +520,13 @@ paste the redirect URL → tokens renewed → store tools return.
 Rule zero: **the other project is not touched, not restarted, not
 re-proxied, and its ports are not reused.**
 
-- **Phase 0 recon (read-only)** recorded in `docs/SERVER-INVENTORY.md`:
-  `docker ps -a`, `docker compose ls`, running systemd services, `ss -ltnp`,
-  `free -m`, `df -h`, `/opt /srv /home/*`, any reverse proxy and its config,
-  unattended-upgrades status. Go / no-go on RAM headroom: we want at least
-  1.2 GB free at rest for Postgres + server + occasional Playwright.
+- **Phase 0 recon (read-only)** is done and recorded in
+  [`docs/SERVER-INVENTORY.md`](./SERVER-INVENTORY.md). Verdict: **go**, with
+  two hard facts. nginx owns every public web port, so the tunnel is the
+  only exposure. The disk has 4.5 GB free, so images are either built off
+  the box (PC or GitHub Actions, then pulled) or the 3.3 GB of reclaimable
+  Docker build cache is pruned first; that choice is the operator's. RAM
+  headroom is 2.3 GB, enough for Postgres + server + occasional Playwright.
 - **Stack:** `/opt/shopai/` with `docker-compose.yml`, `.env`, `data/`
   (Postgres volume), `backups/`, `profiles/` (Playwright). Own network
   `shopai`. Services: `postgres` (no ports), `server` (no ports), and one
