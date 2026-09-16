@@ -20,7 +20,8 @@ async function main(): Promise<void> {
   log.info({ applied: mig.applied, skipped: mig.skipped.length }, "migrations");
 
   const household = await ensureHousehold(handle.db, cfg);
-  await ensureAdmin(handle.db, household, cfg.ADMIN_TELEGRAM_ID);
+  if (cfg.ADMIN_TELEGRAM_ID) await ensureAdmin(handle.db, household, cfg.ADMIN_TELEGRAM_ID);
+  else log.warn("ADMIN_TELEGRAM_ID not set: nobody is a member yet; set it and restart");
   log.info({ household: household.name, id: household.id }, "household ready");
 
   const zagiCfg = zagiConfigFromEnv();

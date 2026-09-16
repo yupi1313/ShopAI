@@ -105,6 +105,7 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
       return;
     }
     await ctx.reply(t(ctx.lang).notAuthorised(ctx.from.id)).catch(() => {});
+    if (!cfg.ADMIN_TELEGRAM_ID || cfg.ADMIN_TELEGRAM_ID === ctx.from.id) return;
     const who = `${[ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ")}${ctx.from.username ? ` @${ctx.from.username}` : ""}`;
     await bot.api
       .sendMessage(cfg.ADMIN_TELEGRAM_ID, `Unknown user tried to talk to the bot: ${who} (id ${ctx.from.id}) in chat ${ctx.chat?.id}. Add with /members add ${ctx.from.id} Name`)

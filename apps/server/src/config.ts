@@ -15,7 +15,12 @@ for (const candidate of [path.resolve(process.cwd(), ".env"), path.resolve(proce
 const EnvSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(20),
   DATABASE_URL: z.string().min(1),
-  ADMIN_TELEGRAM_ID: z.coerce.number().int().positive(),
+  // Optional so the stack can boot before the admin's id is known; until it is
+  // set nobody is a member and every message is refused (and logged with the id).
+  ADMIN_TELEGRAM_ID: z.preprocess(
+    (v) => (v === "" || v === undefined || v === null ? undefined : v),
+    z.coerce.number().int().positive().optional(),
+  ),
   HOUSEHOLD_NAME: z.string().min(1).default("Family"),
   TZ: z.string().min(1).default("Europe/Amsterdam"),
   LOG_LEVEL: z.string().default("info"),
