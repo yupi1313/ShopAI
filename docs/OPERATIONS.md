@@ -14,25 +14,47 @@ a URL.
 
 ### 1.1 Authorise the deployment SSH key on the box
 
-The assistant's PC holds a dedicated key pair `~/.ssh/shopai_ed25519`
-(created 2026-09-16). Its public half:
+**State on 2026-09-16.** The Hetzner project lists the key `lucky-deploy`
+(MD5 `44:e1:80:cf:f2:d1:fc:49:f8:15:d3:41:44:de:27:b8`). Its private half
+on the PC is `~/.ssh/lucky_hetzner`; the fingerprint matches exactly. The
+server `116.203.224.204` still answers `Permission denied (publickey)` for
+`root` with it, so the key is registered in Hetzner but **was never
+installed on this server**. Hetzner only installs the keys chosen at
+server creation; keys added to the project later, and "Rebuild", do not
+touch an existing server's `authorized_keys`.
+
+The PC's `~/.ssh/config` has an alias for the box:
+
+```
+Host shopai
+  HostName 116.203.224.204
+  User root
+  IdentityFile ~/.ssh/lucky_hetzner
+  IdentitiesOnly yes
+```
+
+**Fix (no reboot, neighbour untouched):** open a root shell on the server
+by any route that already works for you: the Hetzner Cloud console (the
+`>_` icon on the server page, log in as root with the root password), or
+`ssh root@116.203.224.204` with the password from your own terminal. Then
+paste:
+
+```bash
+mkdir -p /root/.ssh && chmod 700 /root/.ssh
+echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOSojalu12/r6KFXXR2ZVmwJDOzQ0YJFMtTvDMR8NKxD lucky-deploy' >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+```
+
+Do **not** use Hetzner Rescue mode for this: it reboots the server and
+takes the other project down.
+
+Alternative key, if you prefer a ShopAI-only one: the PC also holds
+`~/.ssh/shopai_ed25519`; append this line instead and change
+`IdentityFile` in the alias accordingly:
 
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDTRSUu5f+IlGIXnuOABshdaTPMvI6ct58Ei1cud32sZ shopai-deploy@q1qooo
 ```
-
-Log in to `116.203.224.204` as `root` yourself (your own key or the Hetzner
-web console) and append it:
-
-```bash
-mkdir -p /root/.ssh && chmod 700 /root/.ssh
-echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDTRSUu5f+IlGIXnuOABshdaTPMvI6ct58Ei1cud32sZ shopai-deploy@q1qooo' >> /root/.ssh/authorized_keys
-chmod 600 /root/.ssh/authorized_keys
-```
-
-Adding the key in the Hetzner Cloud console under *Security → SSH keys*
-does **not** install it on an existing server; it only applies to servers
-created afterwards. The append above is what works.
 
 Root is used for the read-only recon because the inventory must see the
 neighbour project's containers, units and ports. After recon we decide
@@ -42,7 +64,7 @@ whether day-to-day deploys move to a dedicated `shopai` user in the
 Verification from the PC:
 
 ```bash
-ssh -i ~/.ssh/shopai_ed25519 -o IdentitiesOnly=yes root@116.203.224.204 'hostname; uptime'
+ssh shopai 'hostname; uptime'
 ```
 
 ### 1.2 Cloudflare Tunnel for the web page
