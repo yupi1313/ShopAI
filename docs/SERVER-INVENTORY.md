@@ -34,6 +34,16 @@ ShopAI must coexist with.
 Memory users at snapshot: acestreamengine 263 MB, cyclezilla replay 258 MB,
 node orchestrator 200 MB, journald 163 MB, pm2 127 MB, dockerd 87 MB.
 
+## Change log: everything ShopAI has done on this box
+
+Kept so the "neighbours untouched" claim is verifiable.
+
+| When (UTC) | Change | Effect on neighbours |
+| --- | --- | --- |
+| 2026-09-16 13:11 | Created `/opt/shopai/cloudflared` (owner uid 65532); pulled image `cloudflare/cloudflared:latest` (~60 MB) | none |
+| 2026-09-16 13:37 | Added `/opt/shopai/cf-login-loop.sh` + pid file; a `timeout 10800` bash loop runs `cloudflared tunnel login` containers until a cert arrives (self-terminates by 16:37) | none |
+| 2026-09-16 14:05 | `docker builder prune -f` then `docker builder prune -af`, approved by the operator: reclaimed 3.32 GB + 1.84 GB of **build cache only**. Free disk 4.4 GB → 8.5 GB | none; all containers and systemd units verified active afterwards. Their next image rebuild will be slower once |
+
 ## Consequences for ShopAI
 
 1. **Ports 80 and 443 belong to nginx.** We do not bind any public port.

@@ -1,0 +1,67 @@
+# ShopAI stack. Lives at /opt/shopai/app on the server; secrets in /opt/shopai/.env.
+# Run from the app dir:  docker compose --env-file ../.env up -d --build
+# Nothing publishes a host port: Telegram is long polling, the web page goes
+# out through the cloudflared tunnel (profile "web").
+name: shopai
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shopai
+      POSTGRES_USER: shopai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in /opt/shopai/.env}
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40"]
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopai -d shopai"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    mem_limit: 256m
+    networks: [shopai]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shopai-server:latest
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgres://shopai:${POSTGRES_PASSWORD}@postgres:5432/shopai
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "3000"
+      LIVENESS_FILE: /tmp/shopai-alive
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 1.5
+    networks: [shopai]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    volumes:
+      - ../cloudflared:/etc/cloudflared:ro
+    depends_on: [server]
+    networks: [shopai]
+    profiles: ["web"]
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+
+networks:
+  shopai:
+    name: shopai
