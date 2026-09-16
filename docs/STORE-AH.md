@@ -80,6 +80,29 @@ Cache search per query ~1 h and product detail ~1 day; one request at a
 time per token; back off on 429. Probe AH gently: this is a private API and
 heavy anonymous probing is what gets an IP throttled.
 
+## Login gotcha found 2026-09-16 (important)
+
+Driving the OAuth login in a **desktop browser does not yield the code.** AH's
+login is a Next.js app: `/secure/oauth/authorize?...redirect_uri=appie://login-exit`
+302s to `/login?...`, and after a successful email+password+**SMS MFA** login the
+API returns `{"nextPage":"ingelogd"}` and the page shows "Je bent al ingelogd" —
+it never performs the `appie://login-exit?code=...` redirect, because the custom
+`appie://` scheme is only handled by the real Appie mobile app. Re-hitting the
+authorize endpoint with the session cookie still bounces to the login form
+(`fetch(..., redirect:"manual")` returns an opaqueredirect whose Location JS
+cannot read). Repeated attempts risk an account lockout and re-trigger SMS.
+
+**Working method to obtain the code:** on a phone (ideally without the Appie app
+installed), open the authorize URL in a mobile browser, log in, and when the
+browser offers to open the app, cancel and copy the `appie://login-exit?code=...`
+link. Paste it to the bot via `/store ah`. It is a one-time step; refresh keeps
+the session afterwards.
+
+**To investigate for a smoother flow:** whether the `/login/api/login/mfa`
+success response (mobile flow) can be made to return the code directly; or a
+headless login against `login.ah.nl/login/api/login` + `/mfa` capturing the
+final authorize `Location`. Not attempted further to avoid lockout.
+
 ## Status
 
 Connector `@shopai/connector-ah` implements: anonymous + member tokens,
