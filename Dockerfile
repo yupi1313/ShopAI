@@ -4,6 +4,8 @@ RUN corepack enable && corepack prepare pnpm@11.5.1 --activate
 WORKDIR /app
 
 FROM base AS build
+# pnpm prune refuses to purge node_modules without a TTY unless it thinks it is in CI.
+ENV CI=true
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps

@@ -135,20 +135,80 @@ polling.
 
 ---
 
-## 3. Server layout (planned, applied in Phase 1)
+## 3. Server layout
 
 ```
 /opt/shopai/
-  docker-compose.yml
-  .env                 root:root 600; all secrets
-  data/postgres/       Postgres volume
-  backups/             nightly pg_dump, keep 14
-  profiles/            Playwright browser profiles (marketplace connectors)
+  .env                     root:root 600; all secrets (copied from the PC's .env)
+  app/                     the committed repo tree, shipped by deploy/deploy.sh (git archive over ssh)
+    docker-compose.yml     postgres + server (+ cloudflared under profile "web")
+    Dockerfile
+  data/postgres/           Postgres volume (created by compose)
+  cloudflared/             tunnel cert.pem, <tunnel-id>.json credentials, config.yml (owner uid 65532)
+  cloudflared-login.log    output of the login loop (Phase 0 only)
+  cf-login-loop.sh/.pid    the self-restarting `cloudflared tunnel login` loop (Phase 0 only)
 ```
 
-Services: `postgres` (no ports), `server` (no ports), `cloudflared` (no
-ports, outbound tunnel). Own docker network `shopai`. Nothing of the
-neighbour project is read, written, restarted or re-proxied.
+Services: `postgres` (no ports), `server` (no ports; HTTP on 3000 inside the
+docker network only), `cloudflared` (no ports, outbound tunnel). Own docker
+network `shopai`. Nothing of the neighbour projects is read, written,
+restarted or re-proxied. Baseline in `SERVER-INVENTORY.md`.
 
-The recon inventory is recorded in `SERVER-INVENTORY.md` before any of
-this is created.
+## 4. Deploy and operate
+
+**Deploy** (from the PC, Git Bash, repo root; ships the committed `HEAD`):
+
+```bash
+bash deploy/deploy.sh
+```
+
+It streams `git archive HEAD` into `/opt/shopai/app`, runs
+`docker compose --env-file ../.env up -d --build --remove-orphans`, prunes
+dangling images and tails the server log. No registry, no GitHub credentials
+on the server. Roughly 3 to 6 minutes on the CPX22 for a full image build.
+
+**Everyday commands** (on the server, from `/opt/shopai/app`):
+
+```bash
+docker compose --env-file ../.env ps
+docker compose --env-file ../.env logs -f --tail=100 server
+docker compose --env-file ../.env restart server
+docker compose --env-file ../.env exec postgres psql -U shopai -d shopai
+```
+
+**First boot checklist**
+
+1. `ADMIN_TELEGRAM_ID` in `/opt/shopai/.env`. If unknown, boot without it:
+   the bot refuses everyone and each refusal names the sender's id (in the
+   reply and in the server log as `unknown user addressed the bot`). Put
+   the admin's id into `.env`, then `restart server`. The admin's display
+   name is taken from Telegram on first contact.
+2. Add family members with `/members add <id> Name` (admin only), or let
+   them message the bot once and use the id from the notification.
+3. Add the bot to the family group. It reacts to commands, replies to its
+   own messages, @mentions and the nicknames (`/nicknames` to manage).
+4. `/stats` shows LLM calls, tokens and latency for the last 24 h.
+
+**Secrets rotation**: edit `/opt/shopai/.env`, then `restart server`
+(Postgres password changes also need the `postgres` service and a manual
+`ALTER ROLE`, so avoid rotating that one casually).
+
+**Backups**: not automated yet (Phase 1 gap). Manual:
+
+```bash
+docker compose --env-file ../.env exec -T postgres pg_dump -U shopai -Fc shopai > /opt/shopai/backups/shopai-$(date +%F).dump
+```
+
+**Web page and tunnel** (Phase 3): once `/opt/shopai/cloudflared/` holds
+`cert.pem` and `<tunnel-id>.json`, write `config.yml` there:
+
+```yaml
+tunnel: <tunnel-id>
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: shop.chern.nl
+    service: http://server:3000
+  - service: http_status:404
+```
+
+and start it with `docker compose --env-file ../.env --profile web up -d`.
