@@ -1,14 +1,14 @@
 import { z } from "zod";
 import { defineTool, type Capability, type ToolContext } from "@shopai/core";
 import type { ZagiClient } from "@shopai/llm";
-import { getActiveList, getOpenItems, setStatus } from "@shopai/capability-grocery";
-import { AH_AUTHORIZE_URL } from "@shopai/connector-ah";
+import { getActiveList } from "@shopai/capability-grocery";
+import { AH_AUTHORIZE_URL, productDeepLink } from "@shopai/connector-ah";
 import { accountStatus, buildClient, tokenSource, type StoreDeps } from "./account.js";
 import { cacheProducts, matchItem, rememberAlias } from "./matcher.js";
-import { executeFill, planFill } from "./fill.js";
+import { planFill } from "./fill.js";
 
 export * from "./account.js";
-export { planFill, executeFill } from "./fill.js";
+export { planFill } from "./fill.js";
 export { matchItem, rememberAlias } from "./matcher.js";
 export { AH_AUTHORIZE_URL } from "@shopai/connector-ah";
 
@@ -18,8 +18,10 @@ export interface StoreCapabilityDeps {
   fetchImpl?: typeof fetch;
 }
 
-/** Tools that add to the AH shopping list; the bot re-shows the plan/list after. */
-export const STORE_SHOP_TOOLS = new Set(["basket_add", "basket_fill_from_list"]);
+// AH gates automated writes to the shopping list behind an app-only signed
+// request we can't reproduce, so the bot produces one-tap add links instead of
+// writing directly. No shop-side-effect tools for now.
+export const STORE_SHOP_TOOLS = new Set<string>();
 
 function money(n: number | null): string {
   return n === null ? "?" : `€${n.toFixed(2)}`;
@@ -98,45 +100,40 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
 
   const basketAdd = defineTool({
     name: "basket_add",
-    description: "Add one Albert Heijn product (by numeric id from store_search) to the AH shopping list. Requires the user to confirm.",
+    description: "Give a one-tap Albert Heijn link to add a product (by numeric id from store_search) to the AH basket. The user taps it in the AH app to add and check out. (AH does not allow the bot to write the basket directly.)",
     schema: z.object({ id: z.union([z.string(), z.number()]), qty: z.number().int().min(1).max(99).optional() }),
-    sideEffect: "shop",
+    sideEffect: "none",
     async handler(args, ctx) {
-      // Runs only after confirmation.
       const ah = buildClient(storeDeps(ctx), ctx.household.id);
-      const qty = args.qty ?? 1;
-      await ah.shoppingListAdd(Number(args.id), qty);
       const p = await ah.product(String(args.id)).catch(() => null);
-      return { added: p ? p.title : String(args.id), qty };
+      return {
+        title: p ? p.title : String(args.id),
+        price: p ? money(p.price) : null,
+        addLink: productDeepLink(args.id),
+        note: "Tap the link, then add it in the AH app.",
+      };
     },
   });
 
   const basketFill = defineTool({
     name: "basket_fill_from_list",
-    description: "Match every open item on the shopping list to an Albert Heijn product and add them to the AH shopping list. Requires the user to confirm; items needing a choice or not found are reported back.",
+    description: "Match every open item on the shopping list to an Albert Heijn product and return a one-tap add link and price for each. The user taps the links in the AH app to build the basket and check out. Items needing a choice or not found are reported back.",
     schema: z.object({}),
-    sideEffect: "shop",
+    sideEffect: "none",
     async handler(_args, ctx) {
-      // Runs only after confirmation.
       const list = await getActiveList(ctx.db, ctx.household.id);
       const ah = buildClient(storeDeps(ctx), ctx.household.id);
       const plan = await planFill(matcherDeps(ctx), ah, ctx.household.id, list.id);
-      const res = await executeFill(
-        {
-          ...matcherDeps(ctx),
-          async setInBasket(ids: number[]) {
-            await setStatus(ctx.db, list.id, ids, "in_basket");
-          },
-        },
-        ah,
-        ctx.household.id,
-        plan,
-      );
+      // Remember confident picks as soft aliases so the choice is stable next time.
+      for (const pick of plan.picks) {
+        if (pick.via === "llm" || pick.via === "previously_bought") {
+          await rememberAlias(ctx.db, ctx.household.id, pick.item.nameRaw, pick.product.id, pick.via === "previously_bought" ? "order" : "llm").catch(() => {});
+        }
+      }
       return {
-        added: res.added.map((a) => `${a.name} → ${a.product} (${money(a.price)})`),
-        needChoice: res.choices.map((c) => c.item.nameRaw),
-        notFound: res.notFound,
-        failed: res.failed,
+        picks: plan.picks.map((p) => ({ item: p.item.nameRaw, product: p.product.title, price: money(p.product.price), reason: p.reason, addLink: productDeepLink(p.product.id) })),
+        needChoice: plan.choices.map((c) => ({ item: c.item.nameRaw, options: c.candidates.map((o) => ({ title: o.title, price: money(o.price), addLink: productDeepLink(o.id) })) })),
+        notFound: plan.notFound.map((i) => i.nameRaw),
       };
     },
   });
@@ -159,8 +156,8 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     const status = await accountStatus(ctx.db, ctx.household.id);
     const line =
       status === "connected"
-        ? "Albert Heijn is connected. You can search AH and, after the user confirms, add products to the AH shopping list (basket_add, basket_fill_from_list). You never pay; a family member opens the AH app and checks out."
-        : "Albert Heijn is NOT connected yet. Search works, but to add to the AH basket the admin must connect it with /store ah. If asked to fill the basket, say it needs connecting first.";
+        ? "Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought) and read the AH list. AH does not let the bot write the basket directly, so basket_add and basket_fill_from_list return one-tap add links with prices; the user taps them in the AH app to add and check out. Present the links clearly, grouped, with prices. You never pay."
+        : "Albert Heijn is NOT connected yet. Search works; to use add-links the admin connects it with /store ah.";
     return `Store: ${line}`;
   }
 

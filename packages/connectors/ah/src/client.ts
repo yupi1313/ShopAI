@@ -13,6 +13,11 @@ const USER_AGENT = "Appie/8.22.3 Model/phone Android/13";
 const CLIENT_ID = "appie";
 export const AH_AUTHORIZE_URL = `https://login.ah.nl/secure/oauth/authorize?client_id=${CLIENT_ID}&redirect_uri=appie%3A%2F%2Flogin-exit&response_type=code`;
 
+/** Web product page; opening it lets a family member add the item in the AH app/site. */
+export function productDeepLink(webshopId: string | number): string {
+  return `https://www.ah.nl/producten/product/wi${webshopId}`;
+}
+
 type FetchImpl = typeof fetch;
 
 interface RawToken {
@@ -103,7 +108,9 @@ function normalizeProduct(p: RawProduct): StoreProduct {
     title: p.title ?? "",
     brand: p.brand ?? null,
     size: p.salesUnitSize ?? null,
-    price: p.currentPrice ?? null,
+    // AH puts the payable price in currentPrice, but for non-bonus items only
+    // priceBeforeBonus is set — fall back so search always shows a price.
+    price: p.currentPrice ?? p.priceBeforeBonus ?? null,
     priceBeforeBonus: p.priceBeforeBonus ?? null,
     unitPrice: p.unitPriceDescription ?? null,
     isBonus: Boolean(p.isBonus),
@@ -169,18 +176,27 @@ export class AhClient {
     const res = await this.authGet("/shoppinglist/v2/items");
     const text = await res.text();
     if (!res.ok) throw new AhError(res.status, "/shoppinglist/v2/items", text);
+    // Real item shape: { listItemId, quantity, type, productDetails: { product: { webshopId, title } }, description? }
     const body = JSON.parse(text) as {
       id?: string;
-      items?: Array<{ id?: string; quantity?: number; productId?: number; product?: { id?: number; title?: string }; description?: string }>;
+      items?: Array<{
+        listItemId?: number;
+        quantity?: number;
+        description?: string;
+        productDetails?: { product?: { webshopId?: number; title?: string } };
+      }>;
     };
     return {
       id: body.id ?? "",
-      items: (body.items ?? []).map((i) => ({
-        id: String(i.id ?? ""),
-        quantity: i.quantity ?? 1,
-        productId: i.productId ?? i.product?.id ?? null,
-        description: i.product?.title ?? i.description ?? null,
-      })),
+      items: (body.items ?? []).map((i) => {
+        const prod = i.productDetails?.product;
+        return {
+          id: String(i.listItemId ?? ""),
+          quantity: i.quantity ?? 1,
+          productId: prod?.webshopId ?? null,
+          description: prod?.title ?? i.description ?? null,
+        };
+      }),
     };
   }
 
