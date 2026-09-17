@@ -139,16 +139,29 @@ AH's **GraphQL API**, which the website uses for its own basket:
   `basket_fill_from_list` behind the confirm gate when `AH_BASKET_WRITE` is
   on (default). Quantities are read first and added to, because the
   mutation sets absolute values.
-- **First live write is still to be done by the family** (a mutation with
-  the member token was not run from this session): ask the bot in Telegram
-  to add one item, tap Confirm, and check the AH app. If AH answers with an
-  error, the bot reports it and `AH_BASKET_WRITE=false` restores the
-  link-only behaviour.
+- **The mutation is verified on `api.ah.nl/graphql` (2026-09-17)**, run
+  against a throwaway anonymous basket from the box with exactly the
+  headers and body the connector sends: the document validates, the input
+  type `BasketMutation` is `{id, quantity, description}` (an unknown field
+  is rejected before execution), and executing it added AH Spaghetti
+  (159760) ×1 for €0.69, confirmed by a re-read. Semantics checked the
+  same way: **quantities are absolute** (setting 3 after 1 gives 3, not
+  4), several products go in one call, **quantity 0 removes the line**,
+  and `summary.price.totalPrice` updates. `result.__typename` is `Basket`,
+  lines are `BasketItemProduct { id quantity }` with `id` = product id.
+  The member token is verified on the `basket` query with the same auth
+  header, so the family's first Confirm tap only exercises what is already
+  proven. `/tmp/write-ah.mjs` on the box is a reversible self-test (add one
+  unit, restore) that can be run with
+  `docker compose --env-file ../.env exec -T server node --input-type=module -e "$(cat /tmp/write-ah.mjs)"`
+  from `/opt/shopai/app`. `AH_BASKET_WRITE=false` remains as a kill switch
+  only.
 
 ## Status
 
 Connector `@shopai/connector-ah` implements: anonymous + member tokens,
 refresh, search, product detail, shopping-list read, GraphQL basket read
-and write. Search, detail, list-read and member login are verified live;
-the basket mutation is captured from the website and wired, awaiting the
-first confirmed add from Telegram. Receipts path still unknown.
+and write. Search, detail, list-read, member login and the GraphQL basket
+read (member token) are verified live; the basket mutation is verified on
+an anonymous basket (absolute quantities, multi-item, 0 = remove) and
+wired behind the confirm gate. Receipts path still unknown.
