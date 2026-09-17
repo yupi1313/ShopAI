@@ -93,3 +93,19 @@ test("readPage summarises an HTML page with products and a jina text page", asyn
   assert.equal(amz.products[0]!.price, 9.99);
   assert.equal(amz.products[0]!.title, "JSAUX kabel");
 });
+
+test("readPage builds a card for a directly fetched Amazon product page without JSON-LD", async () => {
+  const html = `<html><head><title>JSAUX USB-C kabel : Amazon.nl: Elektronica</title></head>
+    <body><span class="a-price"><span class="a-offscreen">€9,49</span></span><div id="feature-bullets">Snel opladen</div></body></html>`;
+  const fake = {
+    fetchPage: async (url: string) => ({ url, finalUrl: url, status: 200, via: "direct", contentType: "text/html", body: html, blocked: false }),
+  } as unknown as WebFetcher;
+  const page = await readPage(fake, "https://www.amazon.nl/dp/B07BBLTX96");
+  assert.equal(page.products.length, 1);
+  const card = page.products[0]!;
+  assert.equal(card.store, "amazon");
+  assert.equal(card.id, "B07BBLTX96");
+  assert.equal(card.title, "JSAUX USB-C kabel");
+  assert.equal(card.price, 9.49);
+  assert.equal(card.priceSource, "page");
+});

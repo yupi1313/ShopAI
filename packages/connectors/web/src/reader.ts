@@ -3,7 +3,7 @@
 
 import type { WebFetcher } from "./fetcher.js";
 import { extractLdProducts, extractTitle, htmlToText, metaContent } from "./html.js";
-import { cleanMarketTitle, extractPriceHint, parseAmazonAsin, parseBolProductId } from "./market.js";
+import { cleanMarketTitle, enrichCard, extractPriceHint, parseAmazonAsin, parseBolProductId } from "./market.js";
 import type { PageSummary, ProductCard } from "./types.js";
 
 export interface ReadOptions {
@@ -69,14 +69,43 @@ export async function readPage(fetcher: WebFetcher, url: string, opts: ReadOptio
   const html = r.body;
   const isHtml = /html/iu.test(r.contentType) || /<html|<body|<div/iu.test(html.slice(0, 2000));
   const text = isHtml ? htmlToText(html) : html;
+  const title = isHtml ? (metaContent(html, "og:title") ?? extractTitle(html)) : null;
+  const products: ProductCard[] = isHtml ? extractLdProducts(html, r.finalUrl).slice(0, 12) : [];
+
+  // Marketplace product pages carry no JSON-LD; build one card from the page
+  // itself (Amazon's offscreen price, bol's structured data, or a euro amount).
+  if (isHtml && products.length === 0) {
+    const asin = parseAmazonAsin(r.finalUrl) ?? parseAmazonAsin(url);
+    const bolId = parseBolProductId(r.finalUrl) ?? parseBolProductId(url);
+    if (asin || bolId) {
+      const card: ProductCard = {
+        store: asin ? "amazon" : "bol",
+        id: asin ?? bolId,
+        title: cleanMarketTitle(title ?? ""),
+        url: r.finalUrl,
+        price: null,
+        currency: "EUR",
+        priceSource: null,
+        brand: null,
+        image: metaContent(html, "og:image"),
+        availability: null,
+        rating: null,
+        reviews: null,
+        snippet: null,
+      };
+      enrichCard(card, html, text, title);
+      if (card.title.length > 3) products.push(card);
+    }
+  }
+
   return {
     url,
     finalUrl: r.finalUrl,
     via: r.via,
     blocked: false,
-    title: isHtml ? (metaContent(html, "og:title") ?? extractTitle(html)) : null,
+    title,
     description: isHtml ? (metaContent(html, "description") ?? metaContent(html, "og:description")) : null,
-    products: isHtml ? extractLdProducts(html, r.finalUrl).slice(0, 12) : [],
+    products,
     text: text.slice(0, maxChars),
     truncated: text.length > maxChars,
   };

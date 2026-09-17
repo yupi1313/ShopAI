@@ -28,11 +28,13 @@ export interface ShoppingList {
   items: ShoppingListItem[];
 }
 
-/** One line of the member's online-order basket (winkelwagen). */
+/** One line of the member's basket (winkelwagen). */
 export interface AhBasketItem {
   id: string;
   productId: number | null;
   quantity: number;
+  /** list = normal basket line; order = already in an open order; external = non-AH item. */
+  kind: "list" | "order" | "external";
 }
 
 export interface AhBasket {

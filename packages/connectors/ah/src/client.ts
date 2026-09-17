@@ -18,23 +18,40 @@ const SVC = `${BASE}/mobile-services`;
  */
 const GRAPHQL = `${BASE}/graphql`;
 
+// A basket has three kinds of lines: itemsInList (the normal basket lines,
+// id = product id), itemsInOrder (lines already in an open order) and
+// externalItems. The family's real basket showed up entirely in itemsInList.
 const BASKET_FIELDS =
-  "itemsInOrder { id quantity product { id __typename } __typename } summary { quantity price { totalPrice { amount formattedV2 __typename } __typename } __typename } __typename";
+  "itemsInList { id quantity __typename } externalItems { id quantity __typename } itemsInOrder { id quantity product { id __typename } __typename } summary { quantity price { totalPrice { amount formattedV2 __typename } __typename } __typename } __typename";
 export const BASKET_QUERY = `query basket { basket { ${BASKET_FIELDS} } }`;
 /** Captured from the website's quantity stepper on 2026-09-17; quantities are absolute per product. */
 export const BASKET_MUTATION = `mutation basketItemsUpdate($items: [BasketMutation!]!) { basketItemsUpdate(items: $items) { result { ${BASKET_FIELDS} } __typename } }`;
 
+interface RawBasketLine {
+  id?: string | number;
+  quantity?: number;
+}
+
 interface RawBasket {
-  itemsInOrder?: Array<{ id?: string | number; quantity?: number; product?: { id?: number } | null }> | null;
+  itemsInList?: RawBasketLine[] | null;
+  externalItems?: RawBasketLine[] | null;
+  itemsInOrder?: Array<RawBasketLine & { product?: { id?: number } | null }> | null;
   summary?: { quantity?: number; price?: { totalPrice?: { amount?: number; formattedV2?: string } | null } | null } | null;
 }
 
+function numericId(v: unknown): number | null {
+  if (typeof v === "number" && Number.isInteger(v)) return v;
+  if (typeof v === "string" && /^\d+$/u.test(v)) return Number(v);
+  return null;
+}
+
 function normalizeBasket(raw: RawBasket | null | undefined): AhBasket {
-  const items = (raw?.itemsInOrder ?? []).map((i) => ({
-    id: String(i.id ?? ""),
-    productId: typeof i.product?.id === "number" ? i.product.id : null,
-    quantity: i.quantity ?? 0,
-  }));
+  const items: AhBasket["items"] = [];
+  for (const i of raw?.itemsInList ?? []) items.push({ id: String(i.id ?? ""), productId: numericId(i.id), quantity: i.quantity ?? 0, kind: "list" });
+  for (const i of raw?.itemsInOrder ?? []) {
+    items.push({ id: String(i.id ?? ""), productId: numericId(i.product?.id) ?? numericId(i.id), quantity: i.quantity ?? 0, kind: "order" });
+  }
+  for (const i of raw?.externalItems ?? []) items.push({ id: String(i.id ?? ""), productId: numericId(i.id), quantity: i.quantity ?? 0, kind: "external" });
   const total = raw?.summary?.price?.totalPrice;
   return {
     items,

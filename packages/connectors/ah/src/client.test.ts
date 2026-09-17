@@ -42,8 +42,10 @@ test("basketItemsUpdate posts the captured mutation with the member token and pa
         data: {
           basketItemsUpdate: {
             result: {
-              itemsInOrder: [{ id: "1", quantity: 2, product: { id: 159760 } }],
-              summary: { quantity: 2, price: { totalPrice: { amount: 2.58, formattedV2: "€ 2,58" } } },
+              itemsInList: [{ id: 159760, quantity: 2 }],
+              externalItems: [],
+              itemsInOrder: [{ id: "77", quantity: 1, product: { id: 4321 } }],
+              summary: { quantity: 3, price: { totalPrice: { amount: 2.58, formattedV2: "€ 2,58" } } },
             },
           },
         },
@@ -64,8 +66,11 @@ test("basketItemsUpdate posts the captured mutation with the member token and pa
   assert.deepEqual(body.variables, { items: [{ id: 159760, quantity: 2, description: null }] });
   assert.equal(body.query, BASKET_MUTATION);
   assert.deepEqual(basket, {
-    items: [{ id: "1", productId: 159760, quantity: 2 }],
-    quantity: 2,
+    items: [
+      { id: "159760", productId: 159760, quantity: 2, kind: "list" },
+      { id: "77", productId: 4321, quantity: 1, kind: "order" },
+    ],
+    quantity: 3,
     totalPrice: 2.58,
     totalFormatted: "€ 2,58",
   });

@@ -125,8 +125,16 @@ AH's **GraphQL API**, which the website uses for its own basket:
   `POST https://api.ah.nl/graphql`** accepts the app bearer token
   (`query member { memberLoginState }` answers with the anonymous token) and
   is reachable from the box. Introspection is disabled.
+- A basket has three kinds of lines: **`itemsInList { id quantity }` are the
+  normal basket lines (id = product id)**, `itemsInOrder` are lines already
+  in an open order (`product { id }`), `externalItems` are non-AH items.
+  The family's real basket (read live from the box with the member token
+  on 2026-09-17: 103 units, €369.67) sits entirely in `itemsInList`; a
+  query that only selects `itemsInOrder` sees an empty basket. `totalPrice`
+  is under `summary.price`, not `summary`.
 - The connector now has `AhClient.graphql()`, `basket()` (query root field
-  `basket`, verified read-only) and `basketItemsUpdate()`; the store
+  `basket`, verified read-only with both the anonymous and the member
+  token) and `basketItemsUpdate()`; the store
   capability exposes `basket_add`, `basket_plan` (dry run) and
   `basket_fill_from_list` behind the confirm gate when `AH_BASKET_WRITE` is
   on (default). Quantities are read first and added to, because the
