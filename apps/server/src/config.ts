@@ -31,6 +31,9 @@ const EnvSchema = z.object({
   // Encrypts store tokens at rest. Required once a store is connected; if unset
   // the stack still boots and store features stay disabled.
   SESSION_SECRET: z.string().min(16).optional(),
+  // Write to the AH basket through api.ah.nl/graphql (behind the confirm
+  // gate). "false" = one-tap links only, as before.
+  AH_BASKET_WRITE: z.string().default("true"),
   ZAGI_BASE_URL: z.string().optional(),
   ZAGI_API_KEY: z.string().optional(),
   ZAGI_MODEL: z.string().optional(),
@@ -50,6 +53,7 @@ const EnvSchema = z.object({
 
 export type AppConfig = z.infer<typeof EnvSchema> & {
   nicknames: string[];
+  ahBasketWrite: boolean;
   webEnabled: boolean;
   webSearchProviders: string[];
   webProxyHosts: string[];
@@ -67,6 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     ...cfg,
     nicknames: csv(cfg.NICKNAMES),
+    ahBasketWrite: !/^(false|0|no|off)$/iu.test(cfg.AH_BASKET_WRITE.trim()),
     webEnabled: !/^(false|0|no|off)$/iu.test(cfg.WEB_ENABLED.trim()),
     webSearchProviders: csv(cfg.WEB_SEARCH_PROVIDERS),
     webProxyHosts: csv(cfg.WEB_PROXY_HOSTS),

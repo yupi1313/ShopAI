@@ -104,8 +104,10 @@ options, cheapest first:
    as "add product 193679 x2 to the AH basket" by calling the site's own
    web API from inside the real browser session. Residential IP, real
    browser fingerprint, real cookies: this passes Akamai and bol's checks,
-   and it is the only route to AH basket **writes** while the app API's
-   write endpoint stays gated (see [STORE-AH.md](./STORE-AH.md)). Costs:
+   and it would also cover bol.com basket writes with a logged-in bol
+   account. (AH basket writes turned out not to need it: the website's
+   GraphQL mutation is also served on `api.ah.nl/graphql`, which the server
+   can reach with the app token, see [STORE-AH.md](./STORE-AH.md).) Costs:
    the machine must be on when the family asks; otherwise the bot degrades
    to links. Every write stays behind the confirm gate.
 4. **Amazon Creators API**: clean catalogue search if the family opens an

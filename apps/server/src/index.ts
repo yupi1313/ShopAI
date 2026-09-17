@@ -30,7 +30,8 @@ async function main(): Promise<void> {
   const llm = zagiCfg ? createZagiClient(zagiCfg) : null;
   const capabilities = [groceryCapability];
   if (cfg.SESSION_SECRET) {
-    capabilities.push(createStoreCapability({ sessionSecret: cfg.SESSION_SECRET, llm }));
+    capabilities.push(createStoreCapability({ sessionSecret: cfg.SESSION_SECRET, llm, basketWrite: cfg.ahBasketWrite }));
+    log.info({ basketWrite: cfg.ahBasketWrite }, "Albert Heijn store capability ready");
   } else {
     log.warn("SESSION_SECRET not set: Albert Heijn store features are disabled");
   }

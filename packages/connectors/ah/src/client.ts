@@ -1,6 +1,8 @@
 import {
   AhAuthExpiredError,
   AhError,
+  AhGraphqlError,
+  type AhBasket,
   type AhTokens,
   type ShoppingList,
   type StoreProduct,
@@ -9,6 +11,38 @@ import {
 const BASE = "https://api.ah.nl";
 const AUTH_BASE = `${BASE}/mobile-auth/v1/auth`;
 const SVC = `${BASE}/mobile-services`;
+/**
+ * AH's GraphQL API on the mobile host: the same schema the website talks to
+ * at www.ah.nl/gql, but this host accepts the app bearer token and is not
+ * fenced by Akamai for the server. Found 2026-09-17 (docs/STORE-AH.md).
+ */
+const GRAPHQL = `${BASE}/graphql`;
+
+const BASKET_FIELDS =
+  "itemsInOrder { id quantity product { id __typename } __typename } summary { quantity price { totalPrice { amount formattedV2 __typename } __typename } __typename } __typename";
+export const BASKET_QUERY = `query basket { basket { ${BASKET_FIELDS} } }`;
+/** Captured from the website's quantity stepper on 2026-09-17; quantities are absolute per product. */
+export const BASKET_MUTATION = `mutation basketItemsUpdate($items: [BasketMutation!]!) { basketItemsUpdate(items: $items) { result { ${BASKET_FIELDS} } __typename } }`;
+
+interface RawBasket {
+  itemsInOrder?: Array<{ id?: string | number; quantity?: number; product?: { id?: number } | null }> | null;
+  summary?: { quantity?: number; price?: { totalPrice?: { amount?: number; formattedV2?: string } | null } | null } | null;
+}
+
+function normalizeBasket(raw: RawBasket | null | undefined): AhBasket {
+  const items = (raw?.itemsInOrder ?? []).map((i) => ({
+    id: String(i.id ?? ""),
+    productId: typeof i.product?.id === "number" ? i.product.id : null,
+    quantity: i.quantity ?? 0,
+  }));
+  const total = raw?.summary?.price?.totalPrice;
+  return {
+    items,
+    quantity: raw?.summary?.quantity ?? items.reduce((a, i) => a + i.quantity, 0),
+    totalPrice: total?.amount ?? null,
+    totalFormatted: total?.formattedV2 ?? null,
+  };
+}
 const USER_AGENT = "Appie/8.22.3 Model/phone Android/13";
 const CLIENT_ID = "appie";
 export const AH_AUTHORIZE_URL = `https://login.ah.nl/secure/oauth/authorize?client_id=${CLIENT_ID}&redirect_uri=appie%3A%2F%2Flogin-exit&response_type=code`;
@@ -228,5 +262,66 @@ export class AhClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** One GraphQL operation against api.ah.nl/graphql. Throws AhGraphqlError when AH returns errors and no data. */
+  async graphql<T>(
+    operationName: string,
+    query: string,
+    variables: Record<string, unknown> = {},
+    opts: { requireMember?: boolean; timeoutMs?: number } = {},
+  ): Promise<T> {
+    const t = await this.tokens.get();
+    if (opts.requireMember && !t.member) throw new AhAuthExpiredError();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000);
+    try {
+      const res = await this.fetchImpl(GRAPHQL, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "content-type": "application/json",
+          accept: "application/graphql-response+json,application/json;q=0.9",
+          "user-agent": USER_AGENT,
+          "x-application": "AHWEBSHOP",
+          authorization: `Bearer ${t.accessToken}`,
+          ...(opts.requireMember ? { "x-require-member": "true" } : {}),
+        },
+        body: JSON.stringify({ operationName, variables, query }),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new AhError(res.status, `/graphql ${operationName}`, text);
+      const body = JSON.parse(text) as {
+        data?: T | null;
+        errors?: Array<{ message: string; extensions?: Record<string, unknown> }>;
+      };
+      if (body.data === null || body.data === undefined) {
+        throw new AhGraphqlError(operationName, body.errors?.length ? body.errors : [{ message: "empty response" }]);
+      }
+      return body.data;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** The member's online-order basket. */
+  async basket(): Promise<AhBasket> {
+    const data = await this.graphql<{ basket: RawBasket | null }>("basket", BASKET_QUERY, {}, { requireMember: true });
+    return normalizeBasket(data.basket);
+  }
+
+  /**
+   * Set basket quantities (absolute per product, like the website's stepper).
+   * Returns the basket as AH reports it after the change.
+   */
+  async basketItemsUpdate(items: Array<{ productId: number; quantity: number }>): Promise<AhBasket> {
+    if (items.length === 0) throw new Error("basketItemsUpdate: no items");
+    const data = await this.graphql<{ basketItemsUpdate: { result: RawBasket | null } | null }>(
+      "basketItemsUpdate",
+      BASKET_MUTATION,
+      { items: items.map((i) => ({ id: i.productId, quantity: i.quantity, description: null })) },
+      { requireMember: true },
+    );
+    return normalizeBasket(data.basketItemsUpdate?.result);
   }
 }

@@ -4,7 +4,7 @@
 // the official Amazon add-to-cart link. No account, no automation of a
 // logged-in session, nothing is bought.
 
-import { extractLdProducts, extractTitle, hostOf, htmlToText, metaContent } from "./html.js";
+import { decodeEntities, extractLdProducts, extractTitle, hostOf, htmlToText, metaContent } from "./html.js";
 import type { WebFetcher } from "./fetcher.js";
 import type { WebSearch } from "./search.js";
 import { silentLogger, type ProductCard, type SearchResult, type WebLogger } from "./types.js";
@@ -112,6 +112,53 @@ export function cardsFromResults(store: MarketStore, results: SearchResult[]): P
   return out;
 }
 
+export function amazonSearchUrl(query: string): string {
+  return `https://www.amazon.nl/s?k=${encodeURIComponent(query)}`;
+}
+
+export function bolSearchUrl(query: string): string {
+  return `https://www.bol.com/nl/nl/s/?searchtext=${encodeURIComponent(query)}`;
+}
+
+/**
+ * Amazon's own search page (`/s?k=`): one card per
+ * `data-component-type="s-search-result"` block. Sponsored results are kept
+ * but sorted after organic ones. Only reachable from a residential IP.
+ */
+export function parseAmazonSearchHtml(html: string): Array<ProductCard & { sponsored: boolean }> {
+  const flat = html.replace(/[\r\n]+/gu, " ");
+  const out: Array<ProductCard & { sponsored: boolean }> = [];
+  const seen = new Set<string>();
+  for (const block of flat.split(/<div\b(?=[^>]*data-component-type="s-search-result")/u).slice(1)) {
+    const asin = block.match(/data-asin="([A-Z0-9]{10})"/u)?.[1];
+    if (!asin || seen.has(asin)) continue;
+    const h2 = block.match(/<h2[^>]*>([\s\S]*?)<\/h2>/u);
+    const title = h2 ? decodeEntities(h2[1]!.replace(/<[^>]+>/gu, " ")).replace(/\s+/gu, " ").trim() : "";
+    if (!title) continue;
+    seen.add(asin);
+    const priceText = [...block.matchAll(/class="a-offscreen">\s*([^<]*)</gu)].map((m) => m[1]!.trim()).find((t) => /^€/u.test(t));
+    const price = priceText ? extractPriceHint(priceText) : null;
+    const ratingMatch = block.match(/(\d[.,]\d)\s+(?:van|out of)\s+(?:de\s+)?5/u);
+    out.push({
+      store: "amazon",
+      id: asin,
+      title,
+      url: amazonProductLink(asin),
+      price,
+      currency: "EUR",
+      priceSource: price === null ? null : "page",
+      brand: null,
+      image: null,
+      availability: null,
+      rating: ratingMatch ? Number(ratingMatch[1]!.replace(",", ".")) : null,
+      reviews: null,
+      snippet: null,
+      sponsored: /Gesponsord|Sponsored/u.test(block.slice(0, 4000)),
+    });
+  }
+  return out.sort((a, b) => Number(a.sponsored) - Number(b.sponsored));
+}
+
 export interface MarketDeps {
   search: WebSearch;
   fetcher: WebFetcher;
@@ -142,9 +189,38 @@ export async function searchMarketplace(deps: MarketDeps, opts: MarketSearchOpti
   const cards = cardsFromResults(opts.store, hits).slice(0, limit);
   const provider = hits[0]?.source ?? null;
   let pagesBlocked = false;
+
+  // Search engines often return category pages instead of products. Fall back
+  // to the marketplace's own listing page; it only answers from a residential
+  // egress (proxy), so a block here is expected on the server and cheap.
+  if (cards.length < limit) {
+    const listingUrl = opts.store === "amazon" ? amazonSearchUrl(opts.query) : bolSearchUrl(opts.query);
+    try {
+      const listing = await deps.fetcher.fetchPage(listingUrl, { mode: "direct" });
+      if (listing.blocked) {
+        pagesBlocked = true;
+        log.debug({ store: opts.store, why: listing.blockReason }, "market: listing page blocked");
+      } else {
+        const parsed: ProductCard[] =
+          opts.store === "amazon"
+            ? parseAmazonSearchHtml(listing.body).map(({ sponsored: _s, ...card }) => card)
+            : extractLdProducts(listing.body, listing.finalUrl)
+                .map((c) => ({ ...c, store: "bol", id: c.id ?? parseBolProductId(c.url) }))
+                .filter((c) => c.id !== null);
+        for (const c of parsed) {
+          if (cards.length >= limit) break;
+          if (!cards.some((x) => x.id === c.id)) cards.push(c);
+        }
+      }
+    } catch (err) {
+      log.warn({ err: String(err), store: opts.store }, "market: listing page read failed");
+    }
+  }
+
   const enrich = Math.min(cards.length, opts.enrich ?? 2);
   for (let i = 0; i < enrich; i++) {
     const card = cards[i]!;
+    if (card.price !== null && card.priceSource !== "snippet") continue; // page already told us
     try {
       const page = await deps.fetcher.fetchPage(card.url);
       if (page.blocked) {

@@ -200,6 +200,7 @@ server`; details in [WEB.md](./WEB.md)):
 | `WEB_PROXY_URL` | Residential HTTP(S) proxy used for `WEB_PROXY_HOSTS` (default `bol.com,amazon.nl`). Unlocks full page reads on sites that block datacenter IPs. |
 | `WEB_SEARCH_PROVIDERS` | Provider order, default `brave,serper,jina,duckduckgo`. |
 | `WEB_ENABLED` | `false` removes the web tools from the agent. |
+| `AH_BASKET_WRITE` | Default `true`: `basket_add` / `basket_fill_from_list` write to the family's AH basket through `api.ah.nl/graphql` after a Confirm tap. `false` = one-tap product links only (the pre-2026-09-17 behaviour). |
 
 **Secrets rotation**: edit `/opt/shopai/.env`, then `restart server`
 (Postgres password changes also need the `postgres` service and a manual

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import {
   amazonCartLink,
   cardsFromResults,
@@ -7,8 +10,31 @@ import {
   enrichCard,
   extractPriceHint,
   parseAmazonAsin,
+  parseAmazonSearchHtml,
   parseBolProductId,
 } from "./market.js";
+
+test("parseAmazonSearchHtml reads ASIN, title, price and sponsored flag from a real listing", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const html = readFileSync(path.join(here, "fixtures", "amazon_search.html"), "utf8");
+  const cards = parseAmazonSearchHtml(html);
+  assert.ok(cards.length >= 3, `expected cards, got ${cards.length}`);
+  for (const c of cards) {
+    assert.match(c.id!, /^[A-Z0-9]{10}$/u);
+    assert.ok(c.title.length > 10, c.title);
+    assert.equal(c.url, `https://www.amazon.nl/dp/${c.id}`);
+    assert.equal(c.store, "amazon");
+  }
+  const iniu = cards.find((c) => c.id === "B0BR3L78XN")!;
+  assert.match(iniu.title, /^INIU 240W USB-C kabel/u);
+  assert.equal(iniu.price, 9.65);
+  assert.equal(iniu.priceSource, "page");
+  assert.ok(cards.filter((c) => c.price !== null).length >= 2);
+  // organic before sponsored
+  const firstSponsored = cards.findIndex((c) => c.sponsored);
+  const lastOrganic = cards.map((c) => c.sponsored).lastIndexOf(false);
+  assert.ok(firstSponsored === -1 || lastOrganic < firstSponsored);
+});
 
 test("parseBolProductId reads product pages only", () => {
   assert.equal(parseBolProductId("https://www.bol.com/nl/nl/p/belkin-usb-c-naar-usb-c-kabel-2m-zwart/9200000132189684/"), "9200000132189684");

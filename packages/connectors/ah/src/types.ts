@@ -28,6 +28,32 @@ export interface ShoppingList {
   items: ShoppingListItem[];
 }
 
+/** One line of the member's online-order basket (winkelwagen). */
+export interface AhBasketItem {
+  id: string;
+  productId: number | null;
+  quantity: number;
+}
+
+export interface AhBasket {
+  items: AhBasketItem[];
+  /** Units in the basket as AH counts them. */
+  quantity: number;
+  totalPrice: number | null;
+  /** AH's own formatting, e.g. "€ 12,34", when the API sends it. */
+  totalFormatted: string | null;
+}
+
+export class AhGraphqlError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly errors: Array<{ message: string; extensions?: Record<string, unknown> }>,
+  ) {
+    super(`AH graphql ${operation}: ${errors.map((e) => e.message).join("; ").slice(0, 300)}`);
+    this.name = "AhGraphqlError";
+  }
+}
+
 export interface AhTokens {
   accessToken: string;
   refreshToken: string;

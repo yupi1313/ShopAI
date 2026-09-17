@@ -103,9 +103,44 @@ success response (mobile flow) can be made to return the code directly; or a
 headless login against `login.ah.nl/login/api/login` + `/mfa` capturing the
 final authorize `Location`. Not attempted further to avoid lockout.
 
+## Basket writes through GraphQL (found 2026-09-17)
+
+The REST shopping-list write (`PATCH /mobile-services/shoppinglist/v2/items`)
+stays gated (every body shape answers 400; do not retry those). The way in is
+AH's **GraphQL API**, which the website uses for its own basket:
+
+- Captured in a real browser on www.ah.nl (anonymous session, quantity
+  stepper "+" on a search result): `POST https://www.ah.nl/gql` with headers
+  `x-client-name: ah-products`, `x-client-platform-type: Web`,
+  `x-require-member: true`, body
+  `{"operationName":"basketItemsUpdate","variables":{"items":{"quantity":1,"id":159760,"description":null}},"query":"mutation basketItemsUpdate($items: [BasketMutation!]!) { basketItemsUpdate(items: $items) { ...basketMutation } } ..."}`.
+  `id` is the webshopId, `quantity` is the **absolute** new quantity. The
+  result carries the basket: `result { itemsInList { id quantity }
+  externalItems { id quantity } itemsInOrder { id isClosed originCode product
+  { id } quantity allocatedQuantity } summary { price { priceBeforeDiscount
+  priceAfterDiscount totalPrice discount { amount formattedV2 } } quantity
+  isCancellable shoppingType deliveryDate } notes { description } }`.
+- www.ah.nl/gql is fenced by Akamai (403 from the server and from any
+  non-browser client), **but the same API is served on the mobile host:
+  `POST https://api.ah.nl/graphql`** accepts the app bearer token
+  (`query member { memberLoginState }` answers with the anonymous token) and
+  is reachable from the box. Introspection is disabled.
+- The connector now has `AhClient.graphql()`, `basket()` (query root field
+  `basket`, verified read-only) and `basketItemsUpdate()`; the store
+  capability exposes `basket_add`, `basket_plan` (dry run) and
+  `basket_fill_from_list` behind the confirm gate when `AH_BASKET_WRITE` is
+  on (default). Quantities are read first and added to, because the
+  mutation sets absolute values.
+- **First live write is still to be done by the family** (a mutation with
+  the member token was not run from this session): ask the bot in Telegram
+  to add one item, tap Confirm, and check the AH app. If AH answers with an
+  error, the bot reports it and `AH_BASKET_WRITE=false` restores the
+  link-only behaviour.
+
 ## Status
 
 Connector `@shopai/connector-ah` implements: anonymous + member tokens,
-refresh, search, product detail, shopping-list read/add. Search, detail and
-list-read are verified live. Member login, the exact shopping-list write
-body, and the receipts path are confirmed during the first `/store login`.
+refresh, search, product detail, shopping-list read, GraphQL basket read
+and write. Search, detail, list-read and member login are verified live;
+the basket mutation is captured from the website and wired, awaiting the
+first confirmed add from Telegram. Receipts path still unknown.

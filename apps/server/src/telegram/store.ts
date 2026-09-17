@@ -142,7 +142,7 @@ export async function maybeConsumeCode(ctx: BotContext, deps: StoreLoginDeps): P
     if (isCode) await connectWithCode(deps2, deps.householdId(), text);
     else await connectWithRefreshToken(deps2, deps.householdId(), text);
     await ctx.api.deleteMessage(ctx.chat!.id, ctx.message!.message_id).catch(() => {});
-    await ctx.reply("✅ Albert Heijn connected. I can now add products to your AH shopping list after you confirm. You still check out yourself in the AH app.");
+    await ctx.reply("✅ Albert Heijn connected. I can now put products in the family's AH basket after a Confirm tap. You still check out yourself in the AH app.");
   } catch (err) {
     awaitingLogin.set(uid, "ah"); // stay in login mode so they can retry without re-running the command
     await ctx.reply(`Could not connect: ${err instanceof Error ? err.message : "unknown error"}. Paste the code or refresh token again, or send /store ah logout to stop.`);
