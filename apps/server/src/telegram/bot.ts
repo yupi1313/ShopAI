@@ -301,8 +301,8 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     if (kind === "x") {
       await deps.agent.cancelPending(id);
       await ctx.answerCallbackQuery({ text: "Cancelled" }).catch(() => {});
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
-      await ctx.reply("Okay, cancelled.");
+      // Only this product's rows go; the other proposed products stay tappable.
+      await dropButtonRow(ctx, `pa:c:${id}`);
       return;
     }
     await ctx.answerCallbackQuery({ text: "Working…" }).catch(() => {});
@@ -353,7 +353,11 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     }
   });
 
-  /** Remove one row (by its callback data) from the tapped message's inline keyboard. */
+  /**
+   * Remove every row that belongs to one action (all rows carry that action's
+   * callback data, the title rows and the quantity/price row alike) from the
+   * tapped message's inline keyboard; the other actions stay.
+   */
   async function dropButtonRow(ctx: BotContext, callbackData: string): Promise<void> {
     const msg = ctx.callbackQuery?.message;
     const rows = msg && "reply_markup" in msg ? (msg.reply_markup?.inline_keyboard ?? []) : [];
@@ -451,39 +455,67 @@ async function productPrices(db: Db, ids: number[]): Promise<Map<number, string 
   return out;
 }
 
-/** Keep button text readable on a phone: Telegram shows roughly 35 characters. */
-function shortTitle(title: string, max = 30): string {
-  const t = title.replace(/\s+/gu, " ").trim();
-  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+/**
+ * Telegram never wraps button text: a full-width button on a phone shows
+ * about 36 characters, then truncates. So a long title is spread over as many
+ * full-width rows as it needs, every row carrying the same callback (tapping
+ * any of them is the same action).
+ */
+const ROW_CHARS = 34;
+
+function wrapLabel(text: string, max = ROW_CHARS): string[] {
+  const words = text.replace(/\s+/gu, " ").trim().split(" ");
+  const rows: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const word = w.length > max ? `${w.slice(0, max - 1)}…` : w;
+    if (!cur) cur = word;
+    else if (cur.length + 1 + word.length <= max) cur = `${cur} ${word}`;
+    else {
+      rows.push(cur);
+      cur = word;
+    }
+  }
+  if (cur) rows.push(cur);
+  return rows.length ? rows : [text];
 }
 
-/** Confirm buttons for queued basket actions; each names the product, quantity and price. */
+/**
+ * Confirm buttons for queued basket actions. Each product takes its own
+ * block: the full title over one or more rows, then "✅ ×qty — €price" with
+ * the ✖ beside it. All rows of a block share the action's callback data, so
+ * a tap on any of them applies it and dropButtonRow removes the whole block.
+ */
 async function pendingKeyboard(db: Db, pending: Array<{ id: string; tool: string; args: Record<string, unknown> }>): Promise<InlineKeyboard | undefined> {
   if (pending.length === 0) return undefined;
   const addIds = pending.filter((p) => p.tool === "basket_add").map((p) => Number(p.args.id)).filter((n) => Number.isInteger(n) && n > 0);
   const [titles, prices] = await Promise.all([productTitles(db, addIds), productPrices(db, addIds)]);
   const kb = new InlineKeyboard();
   for (const p of pending) {
-    let label: string;
+    const confirm = `pa:c:${p.id}`;
+    const cancel = `pa:x:${p.id}`;
     if (p.tool === "basket_add") {
       const id = Number(p.args.id);
       const qty = typeof p.args.qty === "number" && p.args.qty > 0 ? p.args.qty : 1;
       const title = titles.get(id) ?? `AH #${String(p.args.id)}`;
       const price = prices.get(id);
-      label = `🧺 ${shortTitle(title)} ×${qty}${price ? ` — ${price}` : ""}`;
-    } else if (p.tool === "basket_fill_from_list") {
-      label = "🧺 Fill AH basket from the list";
-    } else if (p.tool === "basket_clear") {
-      label = "🗑 Clear the whole AH basket";
+      const rows = wrapLabel(`🧺 ${title}`);
+      for (const row of rows) kb.text(row, confirm).row();
+      kb.text(`✅ Add ×${qty}${price ? ` — ${price}` : ""}${qty > 1 && price ? ` (${money(Number(price.slice(1)) * qty)})` : ""}`, confirm).text("✖", cancel).row();
     } else {
-      label = `Confirm ${p.tool}`;
+      const label = p.tool === "basket_fill_from_list" ? "🧺 Fill the AH basket from the list" : p.tool === "basket_clear" ? "🗑 Clear the whole AH basket" : `Confirm ${p.tool}`;
+      for (const row of wrapLabel(label)) kb.text(row, confirm).row();
+      kb.text("✅ Yes, do it", confirm).text("✖", cancel).row();
     }
-    kb.text(`✅ ${label}`, `pa:c:${p.id}`).text("✖", `pa:x:${p.id}`).row();
   }
   return kb;
 }
 
-/** After a confirmed add: one "take it out" button per added line. */
+function money(n: number): string {
+  return `€${n.toFixed(2)}`;
+}
+
+/** After a confirmed add: a "take it out" block per added line, laid out like the confirm blocks. */
 function removeKeyboard(result: unknown): InlineKeyboard | undefined {
   if (!result || typeof result !== "object") return undefined;
   const changes = (result as { changes?: BasketChange[] }).changes;
@@ -491,7 +523,11 @@ function removeKeyboard(result: unknown): InlineKeyboard | undefined {
   const added = changes.filter((c) => c.delta > 0).slice(0, 20);
   if (added.length === 0) return undefined;
   const kb = new InlineKeyboard();
-  for (const c of added) kb.text(`✖ ${shortTitle(c.title)} ×${c.delta}`, `bk:x:${c.productId}:${c.delta}`).row();
+  for (const c of added) {
+    const cb = `bk:x:${c.productId}:${c.delta}`;
+    for (const row of wrapLabel(c.title)) kb.text(row, cb).row();
+    kb.text(`✖ Remove ×${c.delta}${c.now > c.delta ? ` (${c.now} in basket)` : ""}`, cb).row();
+  }
   return kb;
 }
 
