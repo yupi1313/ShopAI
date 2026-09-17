@@ -27,6 +27,7 @@ import {
   touchStaples,
 } from "@shopai/capability-grocery";
 import { InlineKeyboard } from "grammy";
+import type { InlineKeyboardButton } from "grammy/types";
 import type { AppConfig } from "./../config.js";
 import type { AppLogger } from "./../logger.js";
 import { pickLang, t, type Lang } from "./../i18n.js";
@@ -53,8 +54,6 @@ const REFUSAL_COOLDOWN_MS = 60 * 60 * 1000;
 const NOOP = "noop";
 /** The bottom row of a basket keyboard: shows the running basket total. */
 const STATUS_CB = "noop:status";
-/** State markers at the start of a product block's action button. */
-const STATE_MARKER = /^(✅ Add|✔ In basket|✔ Done|🚫 Removed|⏭ Skipped|⚠ [^×]*)\s*/u;
 
 export function createBot(deps: BotDeps): Bot<BotContext> {
   const { cfg, db, log } = deps;
@@ -301,64 +300,96 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
   // ---- basket buttons ----
   // Every tap edits the tapped message's keyboard IN PLACE and answers with a
   // toast; nothing new is sent, so the chat never scrolls while the family
-  // works down a list of products. A product block keeps its row count across
-  // states (✅ Add → ✔ In basket → 🚫 Removed → ✔ In basket …), so the buttons
-  // below it never move.
+  // works down a list of products. A product block is: title rows, an info
+  // row ("✔ In basket ×2 — €6.65 (€13.30)") and an action row (➕ / ➖ / ✖);
+  // it keeps that shape across states, so the buttons below never move.
 
   bot.callbackQuery(/^noop(?::.*)?$/u, async (ctx) => {
     await ctx.answerCallbackQuery().catch(() => {});
   });
 
-  // Confirm / cancel a queued shop action.
-  bot.callbackQuery(/^pa:(c|x):(.+)$/u, async (ctx) => {
+  /** Confirm all still-pending products of this message in one tap. */
+  bot.callbackQuery("pa:all", async (ctx) => {
+    if (!ctx.member || !deps.agent) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    let rows = currentRows(ctx);
+    const ids = [...new Set(rows.flatMap((row) => row.map(cbOf)).filter((cb): cb is string => cb !== null && cb.startsWith("pa:c:")).map((cb) => cb.slice(5)))];
+    let added = 0;
+    let total: string | null = null;
+    for (const id of ids) {
+      try {
+        const res = await deps.agent.confirmPending(id, toolCtx(ctx));
+        const r = (res.result ?? {}) as Record<string, unknown>;
+        const change = Array.isArray(r.changes) ? (r.changes as BasketChange[])[0] : undefined;
+        if (res.ok && change) {
+          added++;
+          total = typeof r.basketTotal === "string" ? r.basketTotal : total;
+          rows = rewriteRows(rows, blockOfPending(id), blockRows("in", { qty: change.delta, unit: change.price ?? null, pid: change.productId }), `noop:p:${change.productId}`, total);
+        } else {
+          rows = rewriteRows(rows, blockOfPending(id), blockRows("failed", { ...infoOf(rows, blockOfPending(id)), reason: res.reason ?? "failed" }), NOOP, total);
+        }
+      } catch (err) {
+        log.error({ err, id }, "add-all: confirm failed");
+      }
+    }
+    rows = rows.map((row) => (row.some((b) => cbOf(b) === "pa:all") ? [{ text: added ? `✔ Added ${added}` : "✔ Nothing left to add", callback_data: NOOP }] : row));
+    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: rows } }).catch(() => {});
+    await ctx.answerCallbackQuery({ text: `Added ${added} product${added === 1 ? "" : "s"}${total ? `. Basket ${total}` : ""}` }).catch(() => {});
+  });
+
+  // One queued product: c = confirm, x = skip, m = one more, l = one less.
+  bot.callbackQuery(/^pa:(c|x|m|l):(.+)$/u, async (ctx) => {
     if (!ctx.member || !deps.agent) {
       await ctx.answerCallbackQuery().catch(() => {});
       return;
     }
     const kind = ctx.match[1];
     const id = ctx.match[2]!;
-    const isMine = (cb: string) => cb === `pa:c:${id}` || cb === `pa:x:${id}`;
+    const mine = blockOfPending(id);
+    const rows = currentRows(ctx);
+    const info = infoOf(rows, mine);
+
+    if (kind === "m" || kind === "l") {
+      const args = await pendingArgs(id);
+      if (!args) {
+        await ctx.answerCallbackQuery({ text: "Already handled" }).catch(() => {});
+        return;
+      }
+      const qty = Math.max(1, Math.min(99, info.qty + (kind === "m" ? 1 : -1)));
+      await db.update(pendingActions).set({ args: { ...args, qty } }).where(and(eq(pendingActions.id, id), eq(pendingActions.status, "pending")));
+      await edit(ctx, rewriteRows(rows, mine, blockRows("pending", { qty, unit: info.unit, pendingId: id }), `pa:c:${id}`));
+      await ctx.answerCallbackQuery({ text: `×${qty}` }).catch(() => {});
+      return;
+    }
 
     if (kind === "x") {
       const cancelled = await deps.agent.cancelPending(id);
       const args = await pendingArgs(id);
       const pid = Number(args?.id);
-      const qty = typeof args?.qty === "number" && args.qty > 0 ? args.qty : 1;
-      await rewriteBlock(ctx, isMine, (tail) => [
-        { text: `⏭ Skipped ${tail}`.trim(), callback_data: NOOP },
-        ...(Number.isInteger(pid) && pid > 0 ? [{ text: "↩ Add", callback_data: `bk:a:${pid}:${qty}` }] : []),
-      ]);
+      await edit(ctx, rewriteRows(rows, mine, blockRows("skipped", { ...info, pid: Number.isInteger(pid) && pid > 0 ? pid : undefined }), NOOP));
       await ctx.answerCallbackQuery({ text: cancelled ? "Skipped" : "Already handled" }).catch(() => {});
       return;
     }
 
     try {
       const res = await deps.agent.confirmPending(id, toolCtx(ctx));
-      if (!res.ok) {
-        await rewriteBlock(ctx, isMine, (tail) => [{ text: `⚠ ${res.reason ?? "failed"} ${tail}`.trim(), callback_data: NOOP }]);
-        await ctx.answerCallbackQuery({ text: `Could not do it: ${res.reason ?? "action failed"}` }).catch(() => {});
-        return;
-      }
       const r = (res.result ?? {}) as Record<string, unknown>;
       const total = typeof r.basketTotal === "string" ? r.basketTotal : null;
       const change = Array.isArray(r.changes) ? (r.changes as BasketChange[])[0] : undefined;
-
+      if (!res.ok) {
+        await edit(ctx, rewriteRows(rows, mine, blockRows("failed", { ...info, reason: res.reason ?? "failed" }), NOOP));
+        await ctx.answerCallbackQuery({ text: `Could not do it: ${res.reason ?? "action failed"}` }).catch(() => {});
+        return;
+      }
       if (res.tool === "basket_add" && change) {
-        await rewriteBlock(
-          ctx,
-          isMine,
-          (tail) => [
-            { text: `✔ In basket ${tail}`.trim(), callback_data: NOOP },
-            { text: "✖ Remove", callback_data: `bk:x:${change.productId}:${change.delta}` },
-          ],
-          total,
-        );
+        await edit(ctx, rewriteRows(rows, mine, blockRows("in", { qty: change.delta, unit: change.price ?? null, pid: change.productId }), `noop:p:${change.productId}`, total));
         await ctx.answerCallbackQuery({ text: `Added ×${change.delta}${total ? `. Basket ${total}` : ""}` }).catch(() => {});
         return;
       }
-
-      // Fill / clear: one tap, one result message with per-line remove buttons.
-      await rewriteBlock(ctx, isMine, (tail) => [{ text: `✔ Done ${tail}`.trim(), callback_data: NOOP }], total);
+      // Fill / clear: one tap, one result message with per-line buttons.
+      await edit(ctx, rewriteRows(rows, mine, blockRows("done", info), NOOP, total));
       await ctx.answerCallbackQuery({ text: "Done" }).catch(() => {});
       const kb = removeKeyboard(res.result);
       await ctx.reply(`✅ ${summariseShopResult(res.tool, res.result) || "Done."}`, kb ? { reply_markup: kb } : {});
@@ -369,38 +400,33 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     }
   });
 
-  // Take a confirmed product out again (bk:x) or put a removed/skipped one back (bk:a).
+  // A product already handled: a = add n more units, x = take n units out.
   bot.callbackQuery(/^bk:(x|a):(\d+):(\d+)$/u, async (ctx) => {
     if (!ctx.member || !cfg.SESSION_SECRET) {
       await ctx.answerCallbackQuery().catch(() => {});
       return;
     }
     const kind = ctx.match[1];
-    const productId = Number(ctx.match[2]);
-    const qty = Number(ctx.match[3]);
-    const mine = `bk:${kind}:${productId}:${qty}`;
+    const pid = Number(ctx.match[2]);
+    const n = Number(ctx.match[3]);
+    const mine = blockOfProduct(pid);
+    const rows = currentRows(ctx);
+    const info = infoOf(rows, mine);
     try {
       const ah = buildClient({ db, sessionSecret: cfg.SESSION_SECRET }, household.id);
       const current = await ah.basket();
-      const have = current.items.find((i) => i.productId === productId)?.quantity ?? 0;
-      const target = kind === "x" ? Math.max(0, have - qty) : have + qty;
-      const basket = target === have ? current : await ah.basketItemsUpdate([{ productId, quantity: target }]);
+      const have = current.items.find((i) => i.productId === pid)?.quantity ?? 0;
+      const target = kind === "x" ? Math.max(0, have - n) : have + n;
+      const basket = target === have ? current : await ah.basketItemsUpdate([{ productId: pid, quantity: target }]);
       const total = basket.totalFormatted ?? (basket.totalPrice === null ? null : `€${basket.totalPrice.toFixed(2)}`);
-      if (kind === "x") {
-        await rewriteBlock(ctx, (cb) => cb === mine, (tail) => [
-          { text: `🚫 Removed ${tail}`.trim(), callback_data: NOOP },
-          { text: "↩ Add again", callback_data: `bk:a:${productId}:${qty}` },
-        ], total);
-        await ctx.answerCallbackQuery({ text: `Removed ×${have - target}${total ? `. Basket ${total}` : ""}` }).catch(() => {});
-      } else {
-        await rewriteBlock(ctx, (cb) => cb === mine, (tail) => [
-          { text: `✔ In basket ${tail}`.trim(), callback_data: NOOP },
-          { text: "✖ Remove", callback_data: `bk:x:${productId}:${qty}` },
-        ], total);
-        await ctx.answerCallbackQuery({ text: `Added ×${qty}${total ? `. Basket ${total}` : ""}` }).catch(() => {});
-      }
+      // The block tracks what this conversation put in: its own quantity, not the whole basket line.
+      const qty = kind === "x" ? Math.max(0, info.qty - n) : (info.state === "in" ? info.qty : 0) + n;
+      const next = qty > 0 ? blockRows("in", { qty, unit: info.unit, pid }) : blockRows("removed", { qty: info.qty, unit: info.unit, pid });
+      await edit(ctx, rewriteRows(rows, mine, next, `noop:p:${pid}`, total));
+      const verb = kind === "x" ? `Removed ×${have - target}` : `Added ×${n}`;
+      await ctx.answerCallbackQuery({ text: `${verb}${total ? `. Basket ${total}` : ""}` }).catch(() => {});
     } catch (err) {
-      log.error({ err, productId, kind }, "basket button failed");
+      log.error({ err, pid, kind }, "basket button failed");
       await ctx.answerCallbackQuery({ text: "Could not change the basket. Try again." }).catch(() => {});
     }
   });
@@ -410,37 +436,13 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
     return rows[0]?.args ?? null;
   }
 
-  /**
-   * Rewrite one product block of the tapped message's keyboard in place. The
-   * block = every row that carries a matching callback; its last row is the
-   * action row and gets `makeAction(tail)` where `tail` is the old label minus
-   * its state marker (so "×2 — €6.65 (€13.30)" survives every state change).
-   * Title rows become inert. The status row at the bottom shows the new total.
-   * Row count never changes, so nothing below the block moves.
-   */
-  async function rewriteBlock(
-    ctx: BotContext,
-    matches: (cb: string) => boolean,
-    makeAction: (tail: string) => Array<{ text: string; callback_data: string }>,
-    basketTotal: string | null = null,
-  ): Promise<void> {
+  function currentRows(ctx: BotContext): KeyboardRow[] {
     const msg = ctx.callbackQuery?.message;
-    const rows = msg && "reply_markup" in msg ? (msg.reply_markup?.inline_keyboard ?? []) : [];
-    const cbOf = (b: (typeof rows)[number][number]): string | null => ("callback_data" in b ? b.callback_data : null);
-    const hit = rows.map((row, i) => (row.some((b) => matches(cbOf(b) ?? "")) ? i : -1)).filter((i) => i >= 0);
-    if (hit.length === 0) return;
-    const actionRow = hit[hit.length - 1]!;
-    const next = rows.map((row, i) => {
-      if (i === actionRow) {
-        const first = row[0];
-        const tail = (first && "text" in first ? first.text : "").replace(STATE_MARKER, "").trim();
-        return makeAction(tail);
-      }
-      if (hit.includes(i)) return row.map((b) => ({ text: b.text, callback_data: NOOP }));
-      if (basketTotal && row.some((b) => cbOf(b) === STATUS_CB)) return [{ text: `🧺 AH basket now: ${basketTotal}`, callback_data: STATUS_CB }];
-      return row;
-    });
-    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: next } }).catch(() => {});
+    return msg && "reply_markup" in msg ? (msg.reply_markup?.inline_keyboard ?? []) : [];
+  }
+
+  async function edit(ctx: BotContext, rows: KeyboardRow[]): Promise<void> {
+    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: rows } }).catch(() => {});
   }
 
   // ---- free text -> agent ----
@@ -522,14 +524,14 @@ async function productTitles(db: Db, ids: number[]): Promise<Map<number, string>
   return out;
 }
 
-async function productPrices(db: Db, ids: number[]): Promise<Map<number, string | null>> {
-  const out = new Map<number, string | null>();
+async function productPrices(db: Db, ids: number[]): Promise<Map<number, number | null>> {
+  const out = new Map<number, number | null>();
   if (ids.length === 0) return out;
   const rows = await db
     .select({ productId: products.productId, price: products.price })
     .from(products)
     .where(and(eq(products.store, "ah"), inArray(products.productId, ids.map(String))));
-  for (const r of rows) out.set(Number(r.productId), r.price === null ? null : `€${Number(r.price).toFixed(2)}`);
+  for (const r of rows) out.set(Number(r.productId), r.price === null ? null : Number(r.price));
   return out;
 }
 
@@ -558,44 +560,141 @@ function wrapLabel(text: string, max = ROW_CHARS): string[] {
   return rows.length ? rows : [text];
 }
 
+type Btn = { text: string; callback_data: string };
+type KeyboardRow = InlineKeyboardButton[];
+type BlockState = "pending" | "in" | "removed" | "skipped" | "failed" | "done";
+
+function money(n: number): string {
+  return `€${n.toFixed(2)}`;
+}
+
+/** "×2 — €6.65 (€13.30)": the part of the info row that survives every state change. */
+function formatTail(qty: number, unit: number | null): string {
+  if (unit === null) return `×${qty}`;
+  return `×${qty} — ${money(unit)}${qty > 1 ? ` (${money(unit * qty)})` : ""}`;
+}
+
+function cbOf(b: InlineKeyboardButton): string | null {
+  return "callback_data" in b ? b.callback_data : null;
+}
+
+/** Rows of one queued product: pa:<c|x|m|l>:<pendingId>. */
+function blockOfPending(id: string): (cb: string) => boolean {
+  return (cb) => /^pa:[cxml]:/u.test(cb) && cb.slice(5) === id;
+}
+
+/** Rows of one handled product: noop:p:<pid> on the inert rows, bk:<a|x>:<pid>:<n> on the buttons. */
+function blockOfProduct(pid: number): (cb: string) => boolean {
+  return (cb) => cb === `noop:p:${pid}` || (cb.startsWith("bk:") && cb.split(":")[2] === String(pid));
+}
+
+/** Quantity, unit price and state of a block, read back from its info row. */
+function infoOf(rows: KeyboardRow[], matches: (cb: string) => boolean): { qty: number; unit: number | null; state: BlockState } {
+  const hit = rows.filter((row) => row.some((b) => matches(cbOf(b) ?? "")));
+  const infoRow = hit[hit.length - 2] ?? hit[hit.length - 1];
+  const text = infoRow?.[0]?.text ?? "";
+  const q = text.match(/×(\d+)/u);
+  const e = text.match(/€\s?(\d+(?:[.,]\d+)?)/u);
+  const state: BlockState = /^✔ In basket/u.test(text) ? "in" : /^🚫/u.test(text) ? "removed" : /^⏭/u.test(text) ? "skipped" : /^⚠/u.test(text) ? "failed" : /^✔ Done/u.test(text) ? "done" : "pending";
+  return { qty: q ? Math.max(1, Number(q[1])) : 1, unit: e ? Number(e[1]!.replace(",", ".")) : null, state };
+}
+
+/** The two bottom rows of a product block (info row + action row) for a state. */
+function blockRows(state: BlockState, o: { qty: number; unit: number | null; pid?: number; pendingId?: string; reason?: string }): Btn[][] {
+  const tail = formatTail(o.qty, o.unit);
+  const pid = o.pid;
+  switch (state) {
+    case "pending": {
+      const id = o.pendingId ?? "";
+      const actions: Btn[] = [{ text: "➕ One more", callback_data: `pa:m:${id}` }];
+      if (o.qty > 1) actions.push({ text: "➖ One less", callback_data: `pa:l:${id}` });
+      actions.push({ text: "✖ Skip", callback_data: `pa:x:${id}` });
+      return [[{ text: `✅ Add ${tail}`, callback_data: `pa:c:${id}` }], actions];
+    }
+    case "in": {
+      const actions: Btn[] = [{ text: "➕ One more", callback_data: `bk:a:${pid}:1` }];
+      if (o.qty > 1) actions.push({ text: "➖ One less", callback_data: `bk:x:${pid}:1` });
+      actions.push({ text: o.qty > 1 ? "✖ Remove all" : "✖ Remove", callback_data: `bk:x:${pid}:${o.qty}` });
+      return [[{ text: `✔ In basket ${tail}`, callback_data: pid === undefined ? NOOP : `noop:p:${pid}` }], actions];
+    }
+    case "removed":
+      return [
+        [{ text: `🚫 Removed ${tail}`, callback_data: `noop:p:${pid}` }],
+        [{ text: "↩ Add again", callback_data: `bk:a:${pid}:${o.qty}` }],
+      ];
+    case "skipped":
+      return [
+        [{ text: `⏭ Skipped ${tail}`, callback_data: pid === undefined ? NOOP : `noop:p:${pid}` }],
+        [pid === undefined ? { text: "·", callback_data: NOOP } : { text: "↩ Add", callback_data: `bk:a:${pid}:${o.qty}` }],
+      ];
+    case "failed":
+      return [
+        [{ text: `⚠ ${(o.reason ?? "failed").slice(0, 20)} ${tail}`, callback_data: pid === undefined ? NOOP : `noop:p:${pid}` }],
+        [pid === undefined ? { text: "·", callback_data: NOOP } : { text: "↩ Try again", callback_data: `bk:a:${pid}:${o.qty}` }],
+      ];
+    case "done":
+      return [[{ text: "✔ Done", callback_data: NOOP }], [{ text: "·", callback_data: NOOP }]];
+  }
+}
+
 /**
- * Confirm buttons for queued basket actions. Each product takes its own
- * block: the full title over one or more rows, then "✅ ×qty — €price" with
- * the ✖ beside it. All rows of a block share the action's callback data, so
- * a tap on any of them applies it and dropButtonRow removes the whole block.
+ * Replace one block in a keyboard: the last two matching rows (info + action)
+ * become `block`, earlier matching rows (the title) get `titleCb`, and the
+ * status row at the bottom shows `basketTotal` when given. Row count is
+ * unchanged, so nothing below the block moves.
+ */
+function rewriteRows(rows: KeyboardRow[], matches: (cb: string) => boolean, block: Btn[][], titleCb: string, basketTotal: string | null = null): KeyboardRow[] {
+  const hit = rows.map((row, i) => (row.some((b) => matches(cbOf(b) ?? "")) ? i : -1)).filter((i) => i >= 0);
+  if (hit.length === 0) return rows;
+  const actionIdx = hit[hit.length - 1]!;
+  const infoIdx = hit.length >= 2 ? hit[hit.length - 2]! : -1;
+  return rows.map((row, i) => {
+    if (i === infoIdx) return block[0]!;
+    if (i === actionIdx) return block[1]!;
+    if (hit.includes(i)) return row.map((b) => ({ text: b.text, callback_data: titleCb }));
+    if (basketTotal && row.some((b) => cbOf(b) === STATUS_CB)) return [{ text: `🧺 AH basket now: ${basketTotal}`, callback_data: STATUS_CB }];
+    return row;
+  });
+}
+
+/**
+ * Confirm keyboard for queued basket actions: a block per product (title
+ * rows, "✅ Add ×qty — €price", then ➕ ➖ ✖), an "Add all" row when there are
+ * several, and a status row that later shows the running basket total.
  */
 async function pendingKeyboard(db: Db, pending: Array<{ id: string; tool: string; args: Record<string, unknown> }>): Promise<InlineKeyboard | undefined> {
   if (pending.length === 0) return undefined;
   const addIds = pending.filter((p) => p.tool === "basket_add").map((p) => Number(p.args.id)).filter((n) => Number.isInteger(n) && n > 0);
   const [titles, prices] = await Promise.all([productTitles(db, addIds), productPrices(db, addIds)]);
   const kb = new InlineKeyboard();
+  let adds = 0;
   for (const p of pending) {
     const confirm = `pa:c:${p.id}`;
-    const cancel = `pa:x:${p.id}`;
     if (p.tool === "basket_add") {
+      adds++;
       const id = Number(p.args.id);
       const qty = typeof p.args.qty === "number" && p.args.qty > 0 ? p.args.qty : 1;
       const title = titles.get(id) ?? `AH #${String(p.args.id)}`;
-      const price = prices.get(id);
-      const rows = wrapLabel(`🧺 ${title}`);
-      for (const row of rows) kb.text(row, confirm).row();
-      kb.text(`✅ Add ×${qty}${price ? ` — ${price}` : ""}${qty > 1 && price ? ` (${money(Number(price.slice(1)) * qty)})` : ""}`, confirm).text("✖", cancel).row();
+      const price = prices.get(id) ?? null;
+      for (const row of wrapLabel(`🧺 ${title}`)) kb.text(row, confirm).row();
+      for (const row of blockRows("pending", { qty, unit: price, pendingId: p.id })) {
+        for (const b of row) kb.text(b.text, b.callback_data);
+        kb.row();
+      }
     } else {
       const label = p.tool === "basket_fill_from_list" ? "🧺 Fill the AH basket from the list" : p.tool === "basket_clear" ? "🗑 Clear the whole AH basket" : `Confirm ${p.tool}`;
       for (const row of wrapLabel(label)) kb.text(row, confirm).row();
-      kb.text("✅ Yes, do it", confirm).text("✖", cancel).row();
+      kb.text("✅ Yes, do it", confirm).row();
+      kb.text("✖ Skip", `pa:x:${p.id}`).row();
     }
   }
+  if (adds > 1) kb.text(`✅ Add all (${adds})`, "pa:all").row();
   // Status row: present from the start so updating it never changes the row count.
   kb.text("🧺 Tap ✅ to put it in the AH basket", STATUS_CB).row();
   return kb;
 }
 
-function money(n: number): string {
-  return `€${n.toFixed(2)}`;
-}
-
-/** After a confirmed fill: a block per added line in the "in basket" state, with ✖ Remove beside it. */
+/** After a confirmed fill: a block per added line in the "in basket" state. */
 function removeKeyboard(result: unknown): InlineKeyboard | undefined {
   if (!result || typeof result !== "object") return undefined;
   const r = result as { changes?: BasketChange[]; basketTotal?: unknown };
@@ -604,9 +703,11 @@ function removeKeyboard(result: unknown): InlineKeyboard | undefined {
   if (added.length === 0) return undefined;
   const kb = new InlineKeyboard();
   for (const c of added) {
-    for (const row of wrapLabel(`🧺 ${c.title}`)) kb.text(row, NOOP).row();
-    const price = typeof c.price === "number" ? ` — ${money(c.price)}${c.delta > 1 ? ` (${money(c.price * c.delta)})` : ""}` : "";
-    kb.text(`✔ In basket ×${c.delta}${price}`, NOOP).text("✖ Remove", `bk:x:${c.productId}:${c.delta}`).row();
+    for (const row of wrapLabel(`🧺 ${c.title}`)) kb.text(row, `noop:p:${c.productId}`).row();
+    for (const row of blockRows("in", { qty: c.delta, unit: typeof c.price === "number" ? c.price : null, pid: c.productId })) {
+      for (const b of row) kb.text(b.text, b.callback_data);
+      kb.row();
+    }
   }
   kb.text(typeof r.basketTotal === "string" ? `🧺 AH basket now: ${r.basketTotal}` : "🧺 AH basket", STATUS_CB).row();
   return kb;
