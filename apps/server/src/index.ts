@@ -3,6 +3,7 @@ import { createZagiClient, zagiConfigFromEnv } from "@shopai/llm";
 import { Agent } from "@shopai/core";
 import { groceryCapability } from "@shopai/capability-grocery";
 import { createStoreCapability } from "@shopai/capability-store";
+import { createWebCapability } from "@shopai/capability-web";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { ensureAdmin, ensureHousehold } from "./bootstrap.js";
@@ -32,6 +33,22 @@ async function main(): Promise<void> {
     capabilities.push(createStoreCapability({ sessionSecret: cfg.SESSION_SECRET, llm }));
   } else {
     log.warn("SESSION_SECRET not set: Albert Heijn store features are disabled");
+  }
+  if (cfg.webEnabled) {
+    capabilities.push(
+      createWebCapability({
+        log,
+        searchProviders: cfg.webSearchProviders,
+        braveApiKey: cfg.BRAVE_SEARCH_API_KEY,
+        serperApiKey: cfg.SERPER_API_KEY,
+        jinaApiKey: cfg.JINA_API_KEY,
+        proxyUrl: cfg.WEB_PROXY_URL,
+        proxyHosts: cfg.webProxyHosts,
+        amazonAssociateTag: cfg.AMAZON_ASSOCIATE_TAG,
+      }),
+    );
+  } else {
+    log.info("WEB_ENABLED=false: internet search and marketplace tools are disabled");
   }
   const agent = llm
     ? new Agent({

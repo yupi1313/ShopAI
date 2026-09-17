@@ -14,6 +14,7 @@
   "dependencies": {
     "@shopai/capability-grocery": "workspace:*",
     "@shopai/capability-store": "workspace:*",
+    "@shopai/capability-web": "workspace:*",
     "@shopai/connector-ah": "workspace:*",
     "@shopai/core": "workspace:*",
     "@shopai/db": "workspace:*",

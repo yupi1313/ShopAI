@@ -1,0 +1,31 @@
+{
+  "name": "@shopai/capability-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web capability: internet search, page reading, bol.com / Amazon.nl product search and Amazon cart links",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@shopai/connector-web": "workspace:*",
+    "@shopai/core": "workspace:*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@shopai/connector-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web connector: polite fetcher (direct / proxy / Jina Reader), search-provider chain, HTML + JSON-LD extraction, bol.com and Amazon.nl helpers",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "undici": "^7.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

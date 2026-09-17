@@ -12,13 +12,15 @@ interface StoreDef {
   name: string;
   /** Whether a login flow exists yet. */
   connectable: boolean;
+  /** Works without any login: the bot reads the public web (search + links). */
+  searchable: boolean;
 }
 
-// Order = display order in the menu. Add bol/amazon here when their connectors land.
+// Order = display order in the menu.
 export const STORES: StoreDef[] = [
-  { key: "ah", name: "Albert Heijn", connectable: true },
-  { key: "bol", name: "bol.com", connectable: false },
-  { key: "amazon", name: "Amazon.nl", connectable: false },
+  { key: "ah", name: "Albert Heijn", connectable: true, searchable: true },
+  { key: "bol", name: "bol.com", connectable: false, searchable: true },
+  { key: "amazon", name: "Amazon.nl", connectable: false, searchable: true },
 ];
 
 export interface StoreLoginDeps {
@@ -41,12 +43,15 @@ async function showMenu(ctx: BotContext, deps: StoreLoginDeps): Promise<void> {
     if (s.key === "ah") {
       const st = await accountStatus(deps.db, deps.householdId());
       lines.push(`• ${s.name} — ${st}  (connect: /store ah)`);
+    } else if (s.searchable) {
+      lines.push(`• ${s.name} — search + links, no login needed (just ask me in chat)`);
     } else {
       lines.push(`• ${s.name} — coming soon`);
     }
   }
   lines.push("", "To connect a store: /store <name>, e.g. /store ah");
   lines.push("Other: /store ah status, /store ah logout");
+  lines.push("", "bol.com / Amazon: ask e.g. “find a 2 m USB-C cable on bol and amazon”. Amazon gets a one-tap add-to-cart link; bol gets product links.");
   await ctx.reply(lines.join("\n"));
 }
 
@@ -68,7 +73,11 @@ export async function handleStoreCommand(ctx: BotContext, deps: StoreLoginDeps):
   const sub = (parts[1] ?? "").toLowerCase();
 
   if (!store.connectable) {
-    await ctx.reply(`${store.name} is not connectable yet — it's on the roadmap. For now I can search it once its connector ships.`);
+    await ctx.reply(
+      store.searchable
+        ? `${store.name} needs no login: just ask me in chat, e.g. “find a 2 m USB-C cable on ${store.name}”. I search its public pages and give links${store.key === "amazon" ? " plus a one-tap add-to-cart link" : ""}; you add and check out yourself.`
+        : `${store.name} is not connectable yet — it's on the roadmap.`,
+    );
     return;
   }
 

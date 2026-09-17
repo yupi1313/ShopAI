@@ -34,9 +34,28 @@ const EnvSchema = z.object({
   ZAGI_BASE_URL: z.string().optional(),
   ZAGI_API_KEY: z.string().optional(),
   ZAGI_MODEL: z.string().optional(),
+  // Web layer: internet search, page reads, bol.com / Amazon.nl. Everything is
+  // optional. Without keys the keyless DuckDuckGo fallback does search and
+  // Jina Reader runs unauthenticated (low rate limits). See docs/WEB.md.
+  WEB_ENABLED: z.string().default("true"),
+  WEB_SEARCH_PROVIDERS: z.string().default("brave,serper,jina,duckduckgo"),
+  BRAVE_SEARCH_API_KEY: z.string().optional(),
+  SERPER_API_KEY: z.string().optional(),
+  JINA_API_KEY: z.string().optional(),
+  // Residential egress for hosts that block datacenter IPs (bol.com, amazon.nl).
+  WEB_PROXY_URL: z.string().optional(),
+  WEB_PROXY_HOSTS: z.string().default("bol.com,amazon.nl"),
+  AMAZON_ASSOCIATE_TAG: z.string().optional(),
 });
 
-export type AppConfig = z.infer<typeof EnvSchema> & { nicknames: string[] };
+export type AppConfig = z.infer<typeof EnvSchema> & {
+  nicknames: string[];
+  webEnabled: boolean;
+  webSearchProviders: string[];
+  webProxyHosts: string[];
+};
+
+const csv = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = EnvSchema.safeParse(env);
@@ -47,6 +66,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const cfg = parsed.data;
   return {
     ...cfg,
-    nicknames: cfg.NICKNAMES.split(",").map((s) => s.trim()).filter(Boolean),
+    nicknames: csv(cfg.NICKNAMES),
+    webEnabled: !/^(false|0|no|off)$/iu.test(cfg.WEB_ENABLED.trim()),
+    webSearchProviders: csv(cfg.WEB_SEARCH_PROVIDERS),
+    webProxyHosts: csv(cfg.WEB_PROXY_HOSTS),
   };
 }

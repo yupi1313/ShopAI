@@ -189,6 +189,18 @@ docker compose --env-file ../.env exec postgres psql -U shopai -d shopai
    own messages, @mentions and the nicknames (`/nicknames` to manage).
 4. `/stats` shows LLM calls, tokens and latency for the last 24 h.
 
+**Web layer keys** (all optional, in `/opt/shopai/.env`, then `restart
+server`; details in [WEB.md](./WEB.md)):
+
+| Variable | Effect |
+| --- | --- |
+| `BRAVE_SEARCH_API_KEY` | Reliable web search (free tier 2000 queries/month). Without any key the bot falls back to DuckDuckGo, which intermittently refuses the box's IP. |
+| `SERPER_API_KEY` | Google results via serper.dev (free tier 2500 queries). |
+| `JINA_API_KEY` | Higher Jina Reader limits and `s.jina.ai` search. Unauthenticated Jina works at 20 reads/minute. |
+| `WEB_PROXY_URL` | Residential HTTP(S) proxy used for `WEB_PROXY_HOSTS` (default `bol.com,amazon.nl`). Unlocks full page reads on sites that block datacenter IPs. |
+| `WEB_SEARCH_PROVIDERS` | Provider order, default `brave,serper,jina,duckduckgo`. |
+| `WEB_ENABLED` | `false` removes the web tools from the agent. |
+
 **Secrets rotation**: edit `/opt/shopai/.env`, then `restart server`
 (Postgres password changes also need the `postgres` service and a manual
 `ALTER ROLE`, so avoid rotating that one casually).

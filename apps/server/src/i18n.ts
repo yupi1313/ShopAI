@@ -3,7 +3,7 @@ export type Lang = "ru" | "en";
 const STRINGS = {
   ru: {
     welcome: "Привет! Я ShopAI (Шон) — семейный помощник по покупкам. Пиши, что добавить в список, спрашивай, что купить. В группе позови меня по имени: шон, шопаи, шоппер.",
-    help: "Команды:\n/list — показать список\n/done — всё куплено\n/staples — регулярные покупки\n/store ah — подключить Albert Heijn (в личке, админ)\n/reset — забыть контекст разговора\n/id — мой Telegram id\n\nПросто пиши: «шон, добавь молоко и бананы», «мы купили хлеб», «что у нас в списке?», «шон, сколько стоит молоко в АХ?»",
+    help: "Команды:\n/list — показать список\n/done — всё куплено\n/staples — регулярные покупки\n/store ah — подключить Albert Heijn (в личке, админ)\n/reset — забыть контекст разговора\n/id — мой Telegram id\n\nПросто пиши: «шон, добавь молоко и бананы», «мы купили хлеб», «что у нас в списке?», «шон, сколько стоит молоко в АХ?», «шон, найди кабель USB-C 2 м на bol и amazon», «шон, поищи в интернете, где купить X»",
     notAuthorised: (id: number) => `Я семейный бот и отвечаю только своим. Твой Telegram id: ${id}. Попроси администратора добавить тебя.`,
     listTitle: "🛒 Список покупок",
     btnBought: "✅",
@@ -23,7 +23,7 @@ const STRINGS = {
   },
   en: {
     welcome: "Hi! I'm ShopAI (Shon), the family shopping assistant. Tell me what to add to the list or ask what to buy. In the group, call me by name: shopai, шон.",
-    help: "Commands:\n/list — show the list\n/done — everything bought\n/staples — regular items\n/store ah — connect Albert Heijn (private chat, admin)\n/reset — forget the conversation context\n/id — my Telegram id\n\nJust write: “shopai, add milk and bananas”, “we bought bread”, “what's on the list?”, “shopai, what does milk cost at AH?”",
+    help: "Commands:\n/list — show the list\n/done — everything bought\n/staples — regular items\n/store ah — connect Albert Heijn (private chat, admin)\n/reset — forget the conversation context\n/id — my Telegram id\n\nJust write: “shopai, add milk and bananas”, “we bought bread”, “what's on the list?”, “shopai, what does milk cost at AH?”, “shopai, find a 2 m USB-C cable on bol and amazon”, “shopai, search the web for where to buy X”",
     notAuthorised: (id: number) => `I am a family bot and only answer family members. Your Telegram id: ${id}. Ask the admin to add you.`,
     listTitle: "🛒 Shopping list",
     btnBought: "✅",

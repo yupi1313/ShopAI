@@ -33,6 +33,7 @@ open items are in section 16.
 | 2026-09-16 | Tunnel live on **shop.chern.nl** (id 7cb4f7f1…); admin is Telegram id 225739586; bot answering. |
 | 2026-09-16 | **Phase 2 built**: AH connector (`@shopai/connector-ah`), store capability (`@shopai/capability-store`), AES-256-GCM token encryption, confirm gate wired end to end, `/store` guided login. AH search/detail/list-read verified live from the box. The exact shopping-list **write** body and the receipts path are confirmed on the first real member login. bol.com/Amazon (Phase 4) and the web page (Phase 3) remain. |
 | 2026-09-16 | Server access works: `ssh shopai` (key `~/.ssh/ttplugin_deploy`, listed on the box as "claude-deploy"). Read-only recon done, see [SERVER-INVENTORY.md](./SERVER-INVENTORY.md): the box hosts **four** neighbours (3x-ui VPN, video/AceStream, cyclezilla, bbbr-api), nginx owns 80/443/8088/8443/8444, RAM has 2.3 GB free, **disk is 94 % full (4.5 GB free)**. Tunnel-only exposure confirmed; image build location to be decided (off-box vs pruning 3.3 GB of Docker build cache). |
+| 2026-09-16 | **Web layer built** (`@shopai/connector-web`, `@shopai/capability-web`): internet search through a provider chain (Brave / Serper / Jina with keys, keyless DuckDuckGo fallback), page reading with direct → residential-proxy → Jina Reader transports, JSON-LD product extraction, bol.com + Amazon.nl discovery via `site:` search, Amazon official add-to-cart links. Recon from the box: **www.ah.nl, bol.com and amazon.nl all refuse the datacenter IP** (Akamai / IP block / Amazon 503), so server-side scraping of those three is impossible without a residential egress; Amazon product pages are readable through Jina, bol.com is not. Details and the roadmap (home browser relay) in [WEB.md](./WEB.md). |
 
 ---
 
@@ -299,6 +300,17 @@ only the Retailer API and Advertising API for sellers; the third-party
 Protocol (OpenAI + Stripe) as of now. Amazon's Product Advertising API 5 is
 deprecated in favour of the **Creators API** (affiliates only, catalogue
 data, no cart operations).
+
+**Status 2026-09-16 (built, see [WEB.md](./WEB.md)):** the plan below met
+reality on the server's datacenter IP. bol.com answers 403 to everything
+from the box (and to plain clients from home), Amazon.nl serves its
+"automated access" page, and www.ah.nl is fenced by Akamai. What shipped:
+product **discovery** through a search engine with a `site:` filter (ids
+parsed from the product URLs), **page reads** through Jina Reader where the
+site allows it (Amazon product pages yes, bol.com no), Amazon's official
+add-to-cart link, and generic `web_search` / `web_read` tools. Full page
+access to the three Dutch sites needs a residential egress; the fetcher
+already routes configured hosts through `WEB_PROXY_URL`.
 
 **Search and compare** therefore read the public web:
 
