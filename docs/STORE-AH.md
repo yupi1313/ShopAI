@@ -149,10 +149,12 @@ AH's **GraphQL API**, which the website uses for its own basket:
   4), several products go in one call, **quantity 0 removes the line**,
   and `summary.price.totalPrice` updates. `result.__typename` is `Basket`,
   lines are `BasketItemProduct { id quantity }` with `id` = product id.
-  The member token is verified on the `basket` query with the same auth
-  header, so the family's first Confirm tap only exercises what is already
-  proven. `/tmp/write-ah.mjs` on the box is a reversible self-test (add one
-  unit, restore) that can be run with
+  **Verified on the family's real basket with the member token on
+  2026-09-17 10:40 UTC** through the deployed connector (`/tmp/write-ah.mjs`
+  on the box: add one unit, verify, restore): 66 lines / 103 units /
+  €369.67 → add AH Spaghetti ×1 → 67 / 104 / €370.29 (re-read confirmed)
+  → quantity 0 → back to 66 / 103 / €369.67 (re-read confirmed), 283 ms
+  per mutation. The self-test can be re-run with
   `docker compose --env-file ../.env exec -T server node --input-type=module -e "$(cat /tmp/write-ah.mjs)"`
   from `/opt/shopai/app`. `AH_BASKET_WRITE=false` remains as a kill switch
   only.
@@ -162,6 +164,8 @@ AH's **GraphQL API**, which the website uses for its own basket:
 Connector `@shopai/connector-ah` implements: anonymous + member tokens,
 refresh, search, product detail, shopping-list read, GraphQL basket read
 and write. Search, detail, list-read, member login and the GraphQL basket
-read (member token) are verified live; the basket mutation is verified on
-an anonymous basket (absolute quantities, multi-item, 0 = remove) and
-wired behind the confirm gate. Receipts path still unknown.
+read and write (member token, reversible add-and-restore on the family's
+basket) are verified live; semantics (absolute quantities, multi-item,
+0 = remove) verified on an anonymous basket; `basket_add`, `basket_remove`,
+`basket_clear` and `basket_fill_from_list` sit behind the confirm gate.
+Receipts path still unknown.
