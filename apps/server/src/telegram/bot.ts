@@ -388,7 +388,13 @@ function pendingKeyboard(pending: Array<{ id: string; tool: string; args: Record
   if (pending.length === 0) return undefined;
   const kb = new InlineKeyboard();
   for (const p of pending) {
-    const label = p.tool === "basket_fill_from_list" ? "🧺 Fill AH basket" : p.tool === "basket_add" ? "🧺 Add to AH basket" : "Confirm";
+    const labels: Record<string, string> = {
+      basket_fill_from_list: "🧺 Fill AH basket",
+      basket_add: "🧺 Add to AH basket",
+      basket_remove: "🧺 Remove from AH basket",
+      basket_clear: "🗑 Clear AH basket",
+    };
+    const label = labels[p.tool] ?? "Confirm";
     kb.text(`✅ ${label}`, `pa:c:${p.id}`).text("✖", `pa:x:${p.id}`).row();
   }
   return kb;
@@ -397,15 +403,29 @@ function pendingKeyboard(pending: Array<{ id: string; tool: string; args: Record
 function summariseShopResult(tool: string | undefined, result: unknown): string {
   if (!result || typeof result !== "object") return "";
   const r = result as Record<string, unknown>;
-  if (tool === "basket_add" && typeof r.added === "string") return `Added ${r.added}${r.qty ? ` ×${String(r.qty)}` : ""} to your AH shopping list.`;
+  const total = typeof r.basketTotal === "string" ? ` Basket now: ${r.basketTotal}.` : "";
+  if (tool === "basket_add" && typeof r.added === "string") return `Added ${r.added}${r.qty ? ` ×${String(r.qty)}` : ""} to the AH basket.${total}`;
+  if (tool === "basket_remove") {
+    if (r.removed === null) return `${String(r.name ?? "That product")} was not in the AH basket.`;
+    if (typeof r.removed === "string") return `Removed ${r.removed}${r.qtyRemoved ? ` ×${String(r.qtyRemoved)}` : ""} from the AH basket.${total}`;
+  }
+  if (tool === "basket_clear") {
+    const cleared = typeof r.cleared === "number" ? r.cleared : 0;
+    const remaining = typeof r.remaining === "number" ? r.remaining : 0;
+    if (cleared === 0) return `AH basket: nothing to clear.${typeof r.note === "string" ? ` ${r.note}.` : ""}`;
+    return `Cleared ${cleared} lines from the AH basket.${remaining ? ` ${remaining} lines remain (already in an open order).` : ""}${total}`;
+  }
   if (tool === "basket_fill_from_list") {
     const added = Array.isArray(r.added) ? (r.added as string[]) : [];
+    const failed = Array.isArray(r.failed) ? (r.failed as string[]) : [];
     const need = Array.isArray(r.needChoice) ? (r.needChoice as string[]) : [];
     const notFound = Array.isArray(r.notFound) ? (r.notFound as string[]) : [];
     const parts: string[] = [];
-    if (added.length) parts.push(`Added to AH list:\n${added.map((a) => `• ${a}`).join("\n")}`);
+    if (added.length) parts.push(`Added to the AH basket:\n${added.map((a) => `• ${a}`).join("\n")}`);
+    if (failed.length) parts.push(`Failed: ${failed.join("; ")}`);
     if (need.length) parts.push(`Need you to choose: ${need.join(", ")}`);
     if (notFound.length) parts.push(`Not found: ${notFound.join(", ")}`);
+    if (typeof r.basketTotal === "string") parts.push(`Basket now: ${r.basketTotal}.`);
     parts.push("Open the AH app to review and check out. I never pay.");
     return parts.join("\n\n");
   }

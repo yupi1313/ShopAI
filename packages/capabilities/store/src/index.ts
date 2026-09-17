@@ -26,7 +26,10 @@ export interface StoreCapabilityDeps {
 }
 
 /** Tools that change the AH basket; the agent runs them only after a human confirms. */
-export const STORE_SHOP_TOOLS = new Set(["basket_add", "basket_fill_from_list"]);
+export const STORE_SHOP_TOOLS = new Set(["basket_add", "basket_fill_from_list", "basket_remove", "basket_clear"]);
+
+/** basketItemsUpdate takes a list; keep each call modest for a 60+ line basket. */
+const MUTATION_CHUNK = 25;
 
 function money(n: number | null): string {
   return n === null ? "?" : `€${n.toFixed(2)}`;
@@ -258,6 +261,51 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
         },
       });
 
+  const basketRemove = defineTool({
+    name: "basket_remove",
+    description:
+      "Take a product (numeric AH id, see basket_view) out of the family's Albert Heijn basket, or lower its quantity by qty. Runs only after a family member taps Confirm.",
+    schema: z.object({
+      id: z.union([z.string(), z.number()]),
+      qty: z.number().int().min(1).max(99).optional().describe("units to remove; omit to remove the whole line"),
+    }),
+    sideEffect: "shop",
+    async handler(args, ctx) {
+      const ah = await requireMember(ctx);
+      const productId = Number(args.id);
+      if (!Number.isInteger(productId) || productId <= 0) throw new Error("product id must be a numeric AH id");
+      const current = await ah.basket();
+      const line = current.items.find((i) => i.productId === productId);
+      const titles = await titlesFor(ctx, [productId]);
+      const name = titles.get(productId) ?? `product ${productId}`;
+      if (!line) return { removed: null, name, note: "not in the basket", basketUnits: current.quantity, basketTotal: basketTotal(current) };
+      const target = args.qty === undefined ? 0 : Math.max(0, line.quantity - args.qty);
+      const basket = await ah.basketItemsUpdate([{ productId, quantity: target }]);
+      return { removed: name, qtyRemoved: line.quantity - target, inBasketNow: target, basketUnits: basket.quantity, basketTotal: basketTotal(basket) };
+    },
+  });
+
+  const basketClear = defineTool({
+    name: "basket_clear",
+    description:
+      "Empty the family's Albert Heijn basket: every line is set to 0. Runs only after a family member taps Confirm. Use when asked to clear or empty the AH basket (the shopping list is a different thing: list_clear).",
+    schema: z.object({}),
+    sideEffect: "shop",
+    async handler(_args, ctx) {
+      const ah = await requireMember(ctx);
+      const current = await ah.basket();
+      const ids = [...new Set(current.items.filter((i) => i.productId !== null && i.kind !== "order").map((i) => i.productId as number))];
+      if (ids.length === 0) {
+        return { cleared: 0, remaining: current.items.length, basketUnits: current.quantity, basketTotal: basketTotal(current), note: current.items.length ? "only lines already in an open order remain; those cannot be cleared here" : "the basket was already empty" };
+      }
+      let basket = current;
+      for (let i = 0; i < ids.length; i += MUTATION_CHUNK) {
+        basket = await ah.basketItemsUpdate(ids.slice(i, i + MUTATION_CHUNK).map((productId) => ({ productId, quantity: 0 })));
+      }
+      return { cleared: ids.length, remaining: basket.items.length, basketUnits: basket.quantity, basketTotal: basketTotal(basket) };
+    },
+  });
+
   const purchasesOf = defineTool({
     name: "purchases_of",
     description: "Find which Albert Heijn product the family usually buys for a given item (e.g. 'pasta', 'coffee'), using saved preferences and AH's previously-bought flag.",
@@ -278,8 +326,8 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     if (write) {
       return [
         "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought), read the family's AH basket (basket_view) and put products in it:",
-        "basket_add for one product; basket_plan to preview how the shopping list maps to AH products (show the picks with prices), then basket_fill_from_list to add them all.",
-        "Basket changes run only after a family member taps Confirm; afterwards they check out in the AH app or on ah.nl. You never pay. Never claim something is in the basket before the confirmation result says so.",
+        "basket_add for one product; basket_plan to preview how the shopping list maps to AH products (show the picks with prices), then basket_fill_from_list to add them all; basket_remove to take a product out or lower its quantity; basket_clear to empty the basket when asked.",
+        "Basket changes run only after a family member taps Confirm; afterwards they check out in the AH app or on ah.nl. You never pay. Never claim something is in, or out of, the basket before the confirmation result says so.",
       ].join(" ");
     }
     return "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought) and read the AH list. AH does not let the bot write the basket directly, so basket_add and basket_fill_from_list return one-tap add links with prices; the user taps them in the AH app to add and check out. Present the links clearly, grouped, with prices. You never pay.";
@@ -287,7 +335,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
 
   return {
     name: "store",
-    tools: [storeStatus, storeSearch, storeProduct, basketView, basketAdd, basketPlan, basketFill, purchasesOf] as Capability["tools"],
+    tools: [storeStatus, storeSearch, storeProduct, basketView, basketAdd, basketPlan, basketFill, ...(write ? [basketRemove, basketClear] : []), purchasesOf] as Capability["tools"],
     promptFragment,
   };
 }
