@@ -41,6 +41,8 @@ export interface BasketChange {
   delta: number;
   /** Units of this product in the basket after the change. */
   now: number;
+  /** Unit price when known, for the buttons. */
+  price?: number | null;
 }
 
 /** basketItemsUpdate takes a list; keep each call modest for a 60+ line basket. */
@@ -187,7 +189,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
           const basket = await ah.basketItemsUpdate([{ productId, quantity: existing + qty }]);
           const nowQty = basket.items.find((i) => i.productId === productId)?.quantity ?? existing + qty;
           const title = p?.title ?? `product ${productId}`;
-          const changes: BasketChange[] = [{ productId, title, delta: qty, now: nowQty }];
+          const changes: BasketChange[] = [{ productId, title, delta: qty, now: nowQty, price: p?.price ?? null }];
           return {
             added: title,
             qty,
@@ -247,7 +249,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
             ctx.household.id,
             plan,
           );
-          const changes: BasketChange[] = res.added.map((a) => ({ productId: a.productId, title: a.product, delta: a.qty, now: a.now }));
+          const changes: BasketChange[] = res.added.map((a) => ({ productId: a.productId, title: a.product, delta: a.qty, now: a.now, price: a.price }));
           return {
             added: res.added.map((a) => `${a.product} ×${a.qty}${a.price !== null ? ` (${money(a.price)})` : ""}`),
             failed: res.failed.map((f) => `${f.name}: ${f.error}`),
