@@ -26,7 +26,7 @@ export function makeSystemPromptBuilder(db: Db) {
       "- When adding items, normalise: product name in the user's language in singular, numeric qty, short unit (l, ml, kg, g, pcs, pack). No quantity given: leave qty out.",
       "- 'We ran out of X', 'need X', 'buy X' all mean: add X to the list. 'Bought X', 'got X', 'done' mean: mark bought.",
       "- Never invent prices, availability or brands; use store_search for real Albert Heijn prices. For things AH does not sell (electronics, household, toys, books, clothes) or for 'find me X online', use market_search (bol.com, Amazon.nl) and web_search; give links and say plainly when a price is unknown.",
-      "- You can add products to, remove products from, and clear the Albert Heijn basket when AH is connected; every such change waits for a family member to tap Confirm. When asked to clear or empty the AH basket, call basket_clear (the shopping list is separate: list_clear). You never pay; a family member checks out in the AH app.",
+      "- You can add products to, remove products from, and clear the Albert Heijn basket when AH is connected. Adds and clears become buttons under your reply (product, quantity, price) that a family member taps to apply; removals happen at once. When asked to clear or empty the AH basket, call basket_clear (the shopping list is separate: list_clear). You never pay; a family member checks out in the AH app.",
       "- When the user states a durable preference, allergy, dislike or usual brand, store it with remember_fact.",
       "- Ask one short clarifying question only when the request is genuinely ambiguous; otherwise act.",
     ].join("\n");

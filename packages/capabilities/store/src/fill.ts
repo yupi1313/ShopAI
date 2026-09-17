@@ -40,7 +40,7 @@ export async function planFill(deps: MatcherDeps, ah: AhClient, householdId: num
 }
 
 export interface FillExecResult {
-  added: Array<{ name: string; product: string; qty: number; price: number | null }>;
+  added: Array<{ name: string; product: string; productId: number; qty: number; now: number; price: number | null }>;
   failed: Array<{ name: string; error: string }>;
   choices: FillChoice[];
   notFound: string[];
@@ -50,8 +50,8 @@ export interface FillExecResult {
 /**
  * Execute a fill: put every confident pick in the AH basket with ONE
  * basketItemsUpdate (quantities are absolute, so existing lines are read
- * first and added to), then mark the list items in_basket. Runs only after a
- * human confirmed.
+ * first and added to), then mark the list items in_basket. Runs after the
+ * user tapped the Confirm button.
  */
 export async function executeFill(
   deps: MatcherDeps & { setInBasket(ids: number[]): Promise<void> },
@@ -83,7 +83,8 @@ export async function executeFill(
 
   const done: number[] = [];
   for (const pick of plan.picks) {
-    out.added.push({ name: pick.item.nameRaw, product: pick.product.title, qty: pick.qty, price: pick.product.price });
+    const pid = Number(pick.product.id);
+    out.added.push({ name: pick.item.nameRaw, product: pick.product.title, productId: pid, qty: pick.qty, now: wanted.get(pid) ?? pick.qty, price: pick.product.price });
     done.push(pick.item.id);
     // A confident automatic pick becomes a soft alias so next time is instant.
     if (pick.via === "llm" || pick.via === "previously_bought") {

@@ -3,15 +3,18 @@ import {
   and,
   chats,
   eq,
+  inArray,
   llmCalls,
   members,
   households,
+  products,
   sqlTag,
   type Db,
   type Household,
   type Member,
 } from "@shopai/db";
 import { addressesBot, clearTurns, escapeHtml, type Agent, type ToolContext } from "@shopai/core";
+import { buildClient, type BasketChange } from "@shopai/capability-store";
 import {
   LIST_MUTATING_TOOLS,
   getActiveList,
@@ -303,20 +306,60 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
       return;
     }
     await ctx.answerCallbackQuery({ text: "Working…" }).catch(() => {});
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => {});
+    // Drop only the tapped row so the other proposed products stay tappable.
+    await dropButtonRow(ctx, `pa:c:${id}`);
     try {
       const res = await deps.agent.confirmPending(id, toolCtx(ctx));
       if (!res.ok) {
         await ctx.reply(`Could not do it: ${res.reason ?? "action failed"}.`);
         return;
       }
-      await ctx.reply(`✅ Done.\n${summariseShopResult(res.tool, res.result)}`);
+      const kb = removeKeyboard(res.result);
+      await ctx.reply(`✅ ${summariseShopResult(res.tool, res.result) || "Done."}`, kb ? { reply_markup: kb } : {});
       if (res.tool === "basket_fill_from_list") await renderList(ctx, "send");
     } catch (err) {
       log.error({ err, id }, "confirm failed");
       await ctx.reply("Something went wrong doing that. Try again.");
     }
   });
+
+  // One-tap "take it out again" after a confirmed basket add: bk:x:<productId>:<qty>
+  bot.callbackQuery(/^bk:x:(\d+):(\d+)$/u, async (ctx) => {
+    if (!ctx.member || !cfg.SESSION_SECRET) {
+      await ctx.answerCallbackQuery().catch(() => {});
+      return;
+    }
+    const productId = Number(ctx.match[1]);
+    const qty = Number(ctx.match[2]);
+    await ctx.answerCallbackQuery({ text: "Removing…" }).catch(() => {});
+    try {
+      const ah = buildClient({ db, sessionSecret: cfg.SESSION_SECRET }, household.id);
+      const current = await ah.basket();
+      const line = current.items.find((i) => i.productId === productId);
+      const title = (await productTitles(db, [productId])).get(productId) ?? `product ${productId}`;
+      if (!line) {
+        await dropButtonRow(ctx, `bk:x:${productId}:${qty}`);
+        await ctx.reply(`${title} is no longer in the AH basket.`);
+        return;
+      }
+      const target = Math.max(0, line.quantity - qty);
+      const basket = await ah.basketItemsUpdate([{ productId, quantity: target }]);
+      await dropButtonRow(ctx, `bk:x:${productId}:${qty}`);
+      const total = basket.totalFormatted ?? (basket.totalPrice === null ? "" : `€${basket.totalPrice.toFixed(2)}`);
+      await ctx.reply(`Removed ${title} ×${line.quantity - target} from the AH basket${target ? ` (${target} left)` : ""}.${total ? ` Basket now: ${total}.` : ""}`);
+    } catch (err) {
+      log.error({ err, productId }, "basket remove button failed");
+      await ctx.reply("Could not remove it. Ask me in chat and I'll try again.");
+    }
+  });
+
+  /** Remove one row (by its callback data) from the tapped message's inline keyboard. */
+  async function dropButtonRow(ctx: BotContext, callbackData: string): Promise<void> {
+    const msg = ctx.callbackQuery?.message;
+    const rows = msg && "reply_markup" in msg ? (msg.reply_markup?.inline_keyboard ?? []) : [];
+    const kept = rows.filter((row) => !row.some((b) => "callback_data" in b && b.callback_data === callbackData));
+    await ctx.editMessageReplyMarkup({ reply_markup: kept.length ? { inline_keyboard: kept } : undefined }).catch(() => {});
+  }
 
   // ---- free text -> agent ----
   bot.on("message:text", async (ctx) => {
@@ -344,9 +387,10 @@ export function createBot(deps: BotDeps): Bot<BotContext> {
         const out = await agent.run({ ctx: toolCtx(ctx), userText: text });
         const replyOpts = isPrivate ? {} : { reply_parameters: { message_id: ctx.message.message_id } };
         const chunks = chunkText(out.text, 4000);
+        const pendingKb = await pendingKeyboard(db, out.pending);
         for (let i = 0; i < chunks.length; i++) {
           const lastChunk = i === chunks.length - 1;
-          const kb = lastChunk ? pendingKeyboard(out.pending) : undefined;
+          const kb = lastChunk ? pendingKb : undefined;
           await ctx.reply(chunks[i]!, { ...replyOpts, ...(kb ? { reply_markup: kb } : {}) });
         }
         if (out.pending.length === 0 && out.toolsUsed.some((n) => LIST_MUTATING_TOOLS.has(n))) {
@@ -384,19 +428,70 @@ export const BOT_COMMANDS = [
   { command: "id", description: "Show my Telegram id" },
 ];
 
-function pendingKeyboard(pending: Array<{ id: string; tool: string; args: Record<string, unknown> }>): InlineKeyboard | undefined {
+/** Titles and prices from the product cache (store_search fills it before any basket_add). */
+async function productTitles(db: Db, ids: number[]): Promise<Map<number, string>> {
+  const out = new Map<number, string>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ productId: products.productId, title: products.title, price: products.price })
+    .from(products)
+    .where(and(eq(products.store, "ah"), inArray(products.productId, ids.map(String))));
+  for (const r of rows) out.set(Number(r.productId), r.title);
+  return out;
+}
+
+async function productPrices(db: Db, ids: number[]): Promise<Map<number, string | null>> {
+  const out = new Map<number, string | null>();
+  if (ids.length === 0) return out;
+  const rows = await db
+    .select({ productId: products.productId, price: products.price })
+    .from(products)
+    .where(and(eq(products.store, "ah"), inArray(products.productId, ids.map(String))));
+  for (const r of rows) out.set(Number(r.productId), r.price === null ? null : `€${Number(r.price).toFixed(2)}`);
+  return out;
+}
+
+/** Keep button text readable on a phone: Telegram shows roughly 35 characters. */
+function shortTitle(title: string, max = 30): string {
+  const t = title.replace(/\s+/gu, " ").trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+}
+
+/** Confirm buttons for queued basket actions; each names the product, quantity and price. */
+async function pendingKeyboard(db: Db, pending: Array<{ id: string; tool: string; args: Record<string, unknown> }>): Promise<InlineKeyboard | undefined> {
   if (pending.length === 0) return undefined;
+  const addIds = pending.filter((p) => p.tool === "basket_add").map((p) => Number(p.args.id)).filter((n) => Number.isInteger(n) && n > 0);
+  const [titles, prices] = await Promise.all([productTitles(db, addIds), productPrices(db, addIds)]);
   const kb = new InlineKeyboard();
   for (const p of pending) {
-    const labels: Record<string, string> = {
-      basket_fill_from_list: "🧺 Fill AH basket",
-      basket_add: "🧺 Add to AH basket",
-      basket_remove: "🧺 Remove from AH basket",
-      basket_clear: "🗑 Clear AH basket",
-    };
-    const label = labels[p.tool] ?? "Confirm";
+    let label: string;
+    if (p.tool === "basket_add") {
+      const id = Number(p.args.id);
+      const qty = typeof p.args.qty === "number" && p.args.qty > 0 ? p.args.qty : 1;
+      const title = titles.get(id) ?? `AH #${String(p.args.id)}`;
+      const price = prices.get(id);
+      label = `🧺 ${shortTitle(title)} ×${qty}${price ? ` — ${price}` : ""}`;
+    } else if (p.tool === "basket_fill_from_list") {
+      label = "🧺 Fill AH basket from the list";
+    } else if (p.tool === "basket_clear") {
+      label = "🗑 Clear the whole AH basket";
+    } else {
+      label = `Confirm ${p.tool}`;
+    }
     kb.text(`✅ ${label}`, `pa:c:${p.id}`).text("✖", `pa:x:${p.id}`).row();
   }
+  return kb;
+}
+
+/** After a confirmed add: one "take it out" button per added line. */
+function removeKeyboard(result: unknown): InlineKeyboard | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  const changes = (result as { changes?: BasketChange[] }).changes;
+  if (!Array.isArray(changes)) return undefined;
+  const added = changes.filter((c) => c.delta > 0).slice(0, 20);
+  if (added.length === 0) return undefined;
+  const kb = new InlineKeyboard();
+  for (const c of added) kb.text(`✖ ${shortTitle(c.title)} ×${c.delta}`, `bk:x:${c.productId}:${c.delta}`).row();
   return kb;
 }
 
@@ -404,7 +499,11 @@ function summariseShopResult(tool: string | undefined, result: unknown): string 
   if (!result || typeof result !== "object") return "";
   const r = result as Record<string, unknown>;
   const total = typeof r.basketTotal === "string" ? ` Basket now: ${r.basketTotal}.` : "";
-  if (tool === "basket_add" && typeof r.added === "string") return `Added ${r.added}${r.qty ? ` ×${String(r.qty)}` : ""} to the AH basket.${total}`;
+  if (tool === "basket_add" && typeof r.added === "string") {
+    const price = typeof r.price === "string" ? ` (${r.price})` : "";
+    const now = typeof r.inBasketNow === "number" && r.inBasketNow !== r.qty ? `, ${r.inBasketNow} in the basket now` : "";
+    return `Added ${r.added}${r.qty ? ` ×${String(r.qty)}` : ""}${price} to the AH basket${now}.${total}`;
+  }
   if (tool === "basket_remove") {
     if (r.removed === null) return `${String(r.name ?? "That product")} was not in the AH basket.`;
     if (typeof r.removed === "string") return `Removed ${r.removed}${r.qtyRemoved ? ` ×${String(r.qtyRemoved)}` : ""} from the AH basket.${total}`;

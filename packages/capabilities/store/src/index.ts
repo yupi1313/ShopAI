@@ -19,14 +19,29 @@ export interface StoreCapabilityDeps {
   fetchImpl?: typeof fetch;
   /**
    * Write to the family's AH basket through AH's GraphQL API (api.ah.nl/graphql,
-   * mutation basketItemsUpdate), behind the confirm gate. Off = the bot only
-   * hands out one-tap product links.
+   * mutation basketItemsUpdate). Adds and clears wait for a Confirm button
+   * that names the product, quantity and price; removals run at once (the
+   * family's rule: "show me what goes in, I can take it out"). The bot never
+   * checks out. Off = the bot only hands out one-tap links.
    */
   basketWrite?: boolean;
 }
 
-/** Tools that change the AH basket; the agent runs them only after a human confirms. */
-export const STORE_SHOP_TOOLS = new Set(["basket_add", "basket_fill_from_list", "basket_remove", "basket_clear"]);
+/** Tools that change the AH basket and wait for the Confirm button. */
+export const STORE_SHOP_TOOLS = new Set(["basket_add", "basket_fill_from_list", "basket_clear"]);
+
+/** Tools whose result carries `changes: BasketChange[]`; interfaces render undo buttons for them. */
+export const BASKET_CHANGING_TOOLS = new Set(["basket_add", "basket_fill_from_list", "basket_remove", "basket_clear"]);
+
+/** One line changed by a basket tool, so an interface can offer a one-tap undo. */
+export interface BasketChange {
+  productId: number;
+  title: string;
+  /** Units added (positive) or removed (negative). */
+  delta: number;
+  /** Units of this product in the basket after the change. */
+  now: number;
+}
 
 /** basketItemsUpdate takes a list; keep each call modest for a 60+ line basket. */
 const MUTATION_CHUNK = 25;
@@ -157,7 +172,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     ? defineTool({
         name: "basket_add",
         description:
-          "Put a product (numeric id from store_search) into the family's Albert Heijn basket; qty = how many more units to add. The change waits for a family member to tap Confirm, then they check out in the AH app. Say the product name and price when you propose it.",
+          "Put a product (numeric id from store_search) into the family's Albert Heijn basket; qty = how many more units to add. One call per product. The user gets a button naming the product, quantity and price and taps it to apply; afterwards they can remove it with one tap. In your reply list each product with its price.",
         schema: productSchema,
         sideEffect: "shop",
         async handler(args, ctx) {
@@ -171,13 +186,16 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
           const existing = current?.items.find((i) => i.productId === productId)?.quantity ?? 0;
           const basket = await ah.basketItemsUpdate([{ productId, quantity: existing + qty }]);
           const nowQty = basket.items.find((i) => i.productId === productId)?.quantity ?? existing + qty;
+          const title = p?.title ?? `product ${productId}`;
+          const changes: BasketChange[] = [{ productId, title, delta: qty, now: nowQty }];
           return {
-            added: p?.title ?? `product ${productId}`,
+            added: title,
             qty,
+            price: p ? money(p.price) : null,
             inBasketNow: nowQty,
             basketUnits: basket.quantity,
             basketTotal: basketTotal(basket),
-            next: "A family member checks out in the AH app or on ah.nl. The bot never pays.",
+            changes,
           };
         },
       })
@@ -216,7 +234,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     ? defineTool({
         name: "basket_fill_from_list",
         description:
-          "Put every confidently matched open shopping-list item into the family's Albert Heijn basket in one go and mark those items in_basket. Runs only after a family member taps Confirm. Items needing a choice or not found are reported back; use basket_plan first to preview.",
+          "Put every confidently matched open shopping-list item into the family's Albert Heijn basket and mark those items in_basket. The user taps one button to apply; afterwards each added line gets a remove button. Items needing a choice or not found are reported back. Use basket_plan first when the user wants to see the picks before applying.",
         schema: z.object({}),
         sideEffect: "shop",
         async handler(_args, ctx) {
@@ -229,6 +247,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
             ctx.household.id,
             plan,
           );
+          const changes: BasketChange[] = res.added.map((a) => ({ productId: a.productId, title: a.product, delta: a.qty, now: a.now }));
           return {
             added: res.added.map((a) => `${a.product} ×${a.qty}${a.price !== null ? ` (${money(a.price)})` : ""}`),
             failed: res.failed.map((f) => `${f.name}: ${f.error}`),
@@ -236,6 +255,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
             choices: res.choices.map((c) => ({ item: c.item.nameRaw, options: c.candidates.slice(0, 3).map((o) => ({ id: o.id, title: o.title, price: money(o.price) })) })),
             notFound: res.notFound,
             basketTotal: res.basketTotal,
+            changes,
           };
         },
       })
@@ -264,12 +284,12 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
   const basketRemove = defineTool({
     name: "basket_remove",
     description:
-      "Take a product (numeric AH id, see basket_view) out of the family's Albert Heijn basket, or lower its quantity by qty. Runs only after a family member taps Confirm.",
+      "Take a product (numeric AH id, see basket_view) out of the family's Albert Heijn basket right away, or lower its quantity by qty.",
     schema: z.object({
       id: z.union([z.string(), z.number()]),
       qty: z.number().int().min(1).max(99).optional().describe("units to remove; omit to remove the whole line"),
     }),
-    sideEffect: "shop",
+    sideEffect: "none",
     async handler(args, ctx) {
       const ah = await requireMember(ctx);
       const productId = Number(args.id);
@@ -278,31 +298,35 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
       const line = current.items.find((i) => i.productId === productId);
       const titles = await titlesFor(ctx, [productId]);
       const name = titles.get(productId) ?? `product ${productId}`;
-      if (!line) return { removed: null, name, note: "not in the basket", basketUnits: current.quantity, basketTotal: basketTotal(current) };
+      if (!line) return { removed: null, name, note: "not in the basket", basketUnits: current.quantity, basketTotal: basketTotal(current), changes: [] };
       const target = args.qty === undefined ? 0 : Math.max(0, line.quantity - args.qty);
       const basket = await ah.basketItemsUpdate([{ productId, quantity: target }]);
-      return { removed: name, qtyRemoved: line.quantity - target, inBasketNow: target, basketUnits: basket.quantity, basketTotal: basketTotal(basket) };
+      const changes: BasketChange[] = [{ productId, title: name, delta: target - line.quantity, now: target }];
+      return { removed: name, qtyRemoved: line.quantity - target, inBasketNow: target, basketUnits: basket.quantity, basketTotal: basketTotal(basket), changes };
     },
   });
 
   const basketClear = defineTool({
     name: "basket_clear",
     description:
-      "Empty the family's Albert Heijn basket: every line is set to 0. Runs only after a family member taps Confirm. Use when asked to clear or empty the AH basket (the shopping list is a different thing: list_clear).",
+      "Empty the family's Albert Heijn basket: every line is set to 0 once the user taps the Confirm button. Use when asked to clear or empty the AH basket (the shopping list is a different thing: list_clear).",
     schema: z.object({}),
     sideEffect: "shop",
     async handler(_args, ctx) {
       const ah = await requireMember(ctx);
       const current = await ah.basket();
-      const ids = [...new Set(current.items.filter((i) => i.productId !== null && i.kind !== "order").map((i) => i.productId as number))];
+      const lines = current.items.filter((i) => i.productId !== null && i.kind !== "order");
+      const ids = [...new Set(lines.map((i) => i.productId as number))];
       if (ids.length === 0) {
-        return { cleared: 0, remaining: current.items.length, basketUnits: current.quantity, basketTotal: basketTotal(current), note: current.items.length ? "only lines already in an open order remain; those cannot be cleared here" : "the basket was already empty" };
+        return { cleared: 0, remaining: current.items.length, basketUnits: current.quantity, basketTotal: basketTotal(current), note: current.items.length ? "only lines already in an open order remain; those cannot be cleared here" : "the basket was already empty", changes: [] };
       }
+      const titles = await titlesFor(ctx, ids);
       let basket = current;
       for (let i = 0; i < ids.length; i += MUTATION_CHUNK) {
         basket = await ah.basketItemsUpdate(ids.slice(i, i + MUTATION_CHUNK).map((productId) => ({ productId, quantity: 0 })));
       }
-      return { cleared: ids.length, remaining: basket.items.length, basketUnits: basket.quantity, basketTotal: basketTotal(basket) };
+      const changes: BasketChange[] = lines.map((l) => ({ productId: l.productId as number, title: titles.get(l.productId as number) ?? `product ${l.productId}`, delta: -l.quantity, now: 0 }));
+      return { cleared: ids.length, remaining: basket.items.length, basketUnits: basket.quantity, basketTotal: basketTotal(basket), changes };
     },
   });
 
@@ -325,9 +349,9 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     if (status !== "connected") return "Store: Albert Heijn is NOT connected yet. Search works; the admin connects it with /store ah.";
     if (write) {
       return [
-        "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought), read the family's AH basket (basket_view) and put products in it:",
-        "basket_add for one product; basket_plan to preview how the shopping list maps to AH products (show the picks with prices), then basket_fill_from_list to add them all; basket_remove to take a product out or lower its quantity; basket_clear to empty the basket when asked.",
-        "Basket changes run only after a family member taps Confirm; afterwards they check out in the AH app or on ah.nl. You never pay. Never claim something is in, or out of, the basket before the confirmation result says so.",
+        "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought), read the family's AH basket (basket_view) and change it:",
+        "basket_add (one call per product, with qty) and basket_fill_from_list put things in; each produces a button under your message that names the product, quantity and price, and the user taps it to apply. basket_remove takes a product out at once. basket_clear empties the basket after a tap. basket_plan previews the list-to-product matching without changing anything.",
+        "When asked to buy or add something, search, pick, call basket_add for every product, and in your reply list each product with quantity and price and the total; say the buttons below apply them. After a confirmed add the user gets remove buttons. You never pay; a family member checks out in the AH app.",
       ].join(" ");
     }
     return "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought) and read the AH list. AH does not let the bot write the basket directly, so basket_add and basket_fill_from_list return one-tap add links with prices; the user taps them in the AH app to add and check out. Present the links clearly, grouped, with prices. You never pay.";

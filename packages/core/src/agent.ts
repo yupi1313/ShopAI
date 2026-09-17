@@ -41,6 +41,8 @@ export interface PendingConfirmation {
 export interface AgentOutput {
   text: string;
   toolsUsed: string[];
+  /** Every tool executed this turn with its result, so interfaces can render follow-up buttons. */
+  executions: ToolExecution[];
   /** Shop side effects the model proposed; the interface renders Confirm/Cancel. */
   pending: PendingConfirmation[];
   rounds: number;
@@ -70,6 +72,7 @@ export class Agent {
     ];
 
     const toolsUsed: string[] = [];
+    const executions: ToolExecution[] = [];
     const pending: PendingConfirmation[] = [];
     let finalText = "";
     let rounds = 0;
@@ -135,6 +138,7 @@ export class Agent {
         }
         const exec = await this.registry.execute(call.name, call.arguments, ctx);
         toolsUsed.push(call.name);
+        executions.push(exec);
         log.info({ tool: call.name, ok: exec.ok, ms: exec.ms, chatKey: ctx.chatKey }, "tool executed");
         messages.push({
           role: "tool",
@@ -156,7 +160,7 @@ export class Agent {
     ];
     await appendTurns(db, ctx.household.id, ctx.chatKey, newTurns);
 
-    return { text: finalText, toolsUsed, pending, rounds: rounds + 1 };
+    return { text: finalText, toolsUsed, executions, pending, rounds: rounds + 1 };
   }
 
   /** Run a queued shop action after a human confirmed it. Idempotent per row. */
