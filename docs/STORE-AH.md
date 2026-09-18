@@ -192,8 +192,13 @@ names taken from the community schema dump in
   (`startPurchaseSync`), or on demand via the `purchases_sync` tool.
 - **Tools:** `purchase_history(query, days)` (per-product counts,
   quantities, spend, last date, per-week rate, recent lines; matches
-  name, brand and AH category), `purchases_recent`, `spending_summary`
-  (per month, in-store vs online). The matcher now prefers the product
+  name, brand and AH **sub-category** such as "Zwaar bier", falling back
+  to the coarse category only when nothing else matches, so "bier" does
+  not pull in wine), `purchases_recent`, `spending_summary` (per month,
+  in-store vs online). First import on 2026-09-18: 325 receipts
+  (2024-07-15 → 2026-09-16) + 10 orders, 4,940 lines, 96 % mapped to
+  webshop products, ≈€24,900 of history; the sync takes ~5 min the first
+  time and seconds afterwards. The matcher now prefers the product
   bought most often under a name in the last year (`via: "history"`).
 
 ## Status
