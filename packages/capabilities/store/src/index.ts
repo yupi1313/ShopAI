@@ -351,7 +351,7 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
   const purchaseHistory = defineTool({
     name: "purchase_history",
     description:
-      "What the family actually bought at Albert Heijn (in-store receipts and online orders) matching a product word, brand or AH category, over the last N days (default 180). Returns per-product counts, quantities, spend, last date, purchases per week, and the recent lines. Use it for 'how often do we buy X', 'when did we last buy X', 'how much do we spend on X', 'which X do we usually buy'. Query in Dutch product words or brand names (bier, melk, kaas, koffie, Hertog Jan); try a second wording if the first finds nothing.",
+      "What the family actually bought at Albert Heijn (in-store receipts and online orders) matching a product word, brand or AH category, over the last N days (default 180). Returns per-product counts, quantities, spend, last date, purchases per week, and the recent lines. Use it for 'how often do we buy X', 'when did we last buy X', 'how much do we spend on X', 'which X do we usually buy'. Query in Dutch product words or brand names (bier, melk, kaas, koffie, Hertog Jan); try a second wording if the first finds nothing. When the word names a department the result is limited to it (restrictedTo, e.g. melk → Zuivel, so milk chocolate is excluded); each match carries its AH category, so drop anything that clearly is not what was asked.",
     schema: z.object({
       query: z.string().min(1).max(80),
       days: z.number().int().min(7).max(730).optional(),

@@ -206,6 +206,10 @@ export interface HistoryMatch {
 export interface HistoryStats {
   query: string;
   days: number;
+  /** Coarse AH category the answer was limited to, when the query named a department. */
+  restrictedTo: string | null;
+  /** Lines dropped by that restriction (e.g. milk chocolate for "melk"). */
+  excluded: number;
   /** Distinct shopping trips/orders in the window (all products). */
   tripsInWindow: number;
   matches: HistoryMatch[];
@@ -249,6 +253,14 @@ export async function purchaseStats(db: Db, householdId: number, query: string, 
   let rows = await select(or(ilike(purchaseItems.nameNorm, q), ilike(purchaseItems.nameRaw, q), ilike(purchaseItems.brand, q), ilike(productsTable.title, q), ilike(productsTable.brand, q), ilike(productsTable.subcategory, q)));
   if (rows.length === 0) rows = await select(or(ilike(productsTable.category, q)));
 
+  // A word like "melk" also sits in "Melkchocolade" and "Knoppers Melk". When
+  // the sub-categories that match the word point clearly at one department
+  // ("Houdbare melk" → "Zuivel, eieren"), keep only that department; lines
+  // without a known category stay. Brand or product-name queries match no
+  // sub-category and are left alone.
+  const { restrictedTo, kept, excluded } = restrictToDepartment(rows, normalizeName(query));
+  rows = kept;
+
   const [tripRow] = await db
     .select({ n: sqlTag<number>`count(*)::int` })
     .from(purchases)
@@ -282,6 +294,8 @@ export async function purchaseStats(db: Db, householdId: number, query: string, 
   return {
     query,
     days,
+    restrictedTo,
+    excluded,
     tripsInWindow: tripRow?.n ?? 0,
     matches: matches.slice(0, 12),
     tripsWithMatch: trips.size,
@@ -291,6 +305,33 @@ export async function purchaseStats(db: Db, householdId: number, query: string, 
     lastBought: rows[0]?.boughtAt.toISOString().slice(0, 10) ?? null,
     recent: rows.slice(0, 10).map((r) => ({ date: r.boughtAt.toISOString().slice(0, 10), title: r.title ?? r.nameRaw, qty: Number(r.qty ?? 1) || 1, price: r.price === null ? null : Number(r.price), channel: r.channel })),
   };
+}
+
+interface CategorisedRow {
+  qty: string | null;
+  subcategory: string | null;
+  category: string | null;
+}
+
+/**
+ * Pick the department a query is about from the sub-categories it matches,
+ * weighted by units bought, and drop lines from other departments. Requires
+ * a clear majority (60 %); otherwise nothing is dropped.
+ */
+export function restrictToDepartment<T extends CategorisedRow>(rows: T[], qNorm: string): { restrictedTo: string | null; kept: T[]; excluded: number } {
+  const weight = new Map<string, number>();
+  let total = 0;
+  for (const r of rows) {
+    if (!r.category || !r.subcategory || !r.subcategory.toLowerCase().includes(qNorm)) continue;
+    const w = Number(r.qty ?? 1) || 1;
+    weight.set(r.category, (weight.get(r.category) ?? 0) + w);
+    total += w;
+  }
+  if (total === 0) return { restrictedTo: null, kept: rows, excluded: 0 };
+  const [top, topWeight] = [...weight.entries()].sort((a, b) => b[1] - a[1])[0]!;
+  if (topWeight / total < 0.6) return { restrictedTo: null, kept: rows, excluded: 0 };
+  const kept = rows.filter((r) => !r.category || r.category === top);
+  return { restrictedTo: top, kept, excluded: rows.length - kept.length };
 }
 
 export interface RecentPurchase {
