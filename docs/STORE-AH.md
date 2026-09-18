@@ -159,6 +159,43 @@ AH's **GraphQL API**, which the website uses for its own basket:
   from `/opt/shopai/app`. `AH_BASKET_WRITE=false` remains as a kill switch
   only.
 
+## Purchase history (found 2026-09-18)
+
+The old REST receipts endpoint (`/mobile-services/v1/receipts`) is gone
+(404 from the gateway). AH serves purchase history on the same GraphQL API
+(`api.ah.nl/graphql`, member token), plus one REST detail endpoint. Field
+names taken from the community schema dump in
+[appie-go](https://github.com/gwillem/appie-go) and verified live:
+
+- **In-store receipts (kassabonnen):**
+  `query FetchPosReceipts($offset: Int!, $limit: Int!) { posReceiptsPage(pagination: {offset: $offset, limit: $limit}) { pagination { totalElements } posReceipts { id dateTime totalAmount { amount } } } }`
+  → the family had **325 receipts** on 2026-09-18, newest 2026-09-16.
+  `query FetchReceipt($id: String!) { posReceiptDetails(id: $id) { id total { amount } discountTotal { amount } transaction { store dateTime } products { id quantity name price { amount } amount { amount } weight { amount unit } } discounts { type name amount { amount } } } }`
+  → lines carry a **till product id** and a till abbreviation ("CAMP
+  KWARK"). `query Convert { p0: productConvertId(sourceId: 853221) … }`
+  maps till ids to webshop ids (853221 → 407975); the importer then
+  fetches the product once to get the real title.
+- **Online orders:**
+  `query OrderFulfillments($status: FulfillmentStatus!) { orderFulfillments(status: $status) { result { orderId statusDescription shoppingType transactionCompleted closingDateTime totalPrice { totalPrice { amount } } delivery { method slot { date } } } } }`
+  with `status: ALL` (`CLOSED`/`OPEN` also exist; other values are
+  rejected) → 10 orders back to 2025-12. Lines:
+  `GET /mobile-services/order/v1/{orderId}/details-grouped-by-taxonomy`
+  → `groupedProductsInTaxonomy[].orderedProducts[]` with `quantity`,
+  `allocatedQuantity` and full `product` (webshopId, title, brand,
+  salesUnitSize, images).
+- **Importer** (`capability-store/src/purchases.ts`): newest-first,
+  stops at the first page that is already stored, 250 ms between calls;
+  receipts → `purchases` (channel `store`, external id = receipt id) and
+  `purchase_items`; orders → channel `online`, external id `order:<id>`.
+  Real titles are resolved in batches of ≤300 lookups per run and the
+  till abbreviations rewritten. Runs 30 s after boot and every 6 h
+  (`startPurchaseSync`), or on demand via the `purchases_sync` tool.
+- **Tools:** `purchase_history(query, days)` (per-product counts,
+  quantities, spend, last date, per-week rate, recent lines; matches
+  name, brand and AH category), `purchases_recent`, `spending_summary`
+  (per month, in-store vs online). The matcher now prefers the product
+  bought most often under a name in the last year (`via: "history"`).
+
 ## Status
 
 Connector `@shopai/connector-ah` implements: anonymous + member tokens,
