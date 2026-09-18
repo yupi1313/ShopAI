@@ -46,6 +46,66 @@ export interface AhBasket {
   totalFormatted: string | null;
 }
 
+/** One in-store receipt (kassabon) as listed. */
+export interface AhReceiptSummary {
+  id: string;
+  /** ISO instant, e.g. 2026-09-16T18:31:00.000Z */
+  dateTime: string;
+  total: number | null;
+}
+
+export interface AhReceiptLine {
+  /** Point-of-sale product id; maps to a webshop id via convertPosIds(). */
+  posId: number | null;
+  /** Abbreviated till name, e.g. "CAMP KWARK". */
+  name: string;
+  quantity: number;
+  unitPrice: number | null;
+  /** Line total as paid (before receipt-level discounts). */
+  amount: number | null;
+  weight: { amount: number; unit: string } | null;
+}
+
+export interface AhReceipt {
+  id: string;
+  storeId: number | null;
+  /** Local till time as printed, e.g. "2026-09-16 20:31:00". */
+  localDateTime: string | null;
+  total: number | null;
+  discountTotal: number | null;
+  lines: AhReceiptLine[];
+  discounts: Array<{ type: string | null; name: string; amount: number | null }>;
+}
+
+/** One online order as listed by orderFulfillments. */
+export interface AhOrderSummary {
+  orderId: number;
+  closingDateTime: string | null;
+  deliveryDate: string | null;
+  total: number | null;
+  status: string | null;
+  shoppingType: string | null;
+  completed: boolean;
+}
+
+export interface AhOrderLine {
+  webshopId: number | null;
+  title: string;
+  brand: string | null;
+  size: string | null;
+  quantity: number;
+  unitPrice: number | null;
+  amount: number | null;
+}
+
+export interface AhOrder {
+  orderId: number;
+  state: string | null;
+  closingTime: string | null;
+  deliveryDate: string | null;
+  lines: AhOrderLine[];
+}
+
 export class AhGraphqlError extends Error {
   constructor(
     readonly operation: string,

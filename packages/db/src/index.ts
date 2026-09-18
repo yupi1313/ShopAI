@@ -4,7 +4,7 @@ import * as schema from "./schema.js";
 
 export * from "./schema.js";
 export { runMigrations, defaultMigrationsDir } from "./migrate.js";
-export { and, asc, desc, eq, inArray, isNull, ne, sql as sqlTag } from "drizzle-orm";
+export { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, or, sql as sqlTag } from "drizzle-orm";
 
 export type Db = PostgresJsDatabase<typeof schema>;
 

@@ -1,16 +1,18 @@
 import { z } from "zod";
-import { defineTool, type Capability, type ToolContext } from "@shopai/core";
+import { defineTool, type Capability, type Logger, type ToolContext } from "@shopai/core";
 import type { ZagiClient } from "@shopai/llm";
 import { getActiveList, setStatus } from "@shopai/capability-grocery";
 import { AH_AUTHORIZE_URL, productDeepLink, type AhBasket } from "@shopai/connector-ah";
-import { and, eq, inArray, products as productsTable } from "@shopai/db";
+import { and, eq, inArray, products as productsTable, type Db } from "@shopai/db";
 import { accountStatus, buildClient, tokenSource, type StoreDeps } from "./account.js";
 import { cacheProducts, matchItem, rememberAlias } from "./matcher.js";
 import { executeFill, planFill } from "./fill.js";
+import { importPurchases, purchaseCoverage, purchaseStats, recentPurchases, spendingByMonth } from "./purchases.js";
 
 export * from "./account.js";
 export { planFill, executeFill } from "./fill.js";
 export { matchItem, rememberAlias } from "./matcher.js";
+export { importPurchases, purchaseStats, recentPurchases, spendingByMonth, purchaseCoverage, usualProductFor } from "./purchases.js";
 export { AH_AUTHORIZE_URL } from "@shopai/connector-ah";
 
 export interface StoreCapabilityDeps {
@@ -346,22 +348,129 @@ export function createStoreCapability(cfgDeps: StoreCapabilityDeps): Capability 
     },
   });
 
+  const purchaseHistory = defineTool({
+    name: "purchase_history",
+    description:
+      "What the family actually bought at Albert Heijn (in-store receipts and online orders) matching a product word, brand or AH category, over the last N days (default 180). Returns per-product counts, quantities, spend, last date, purchases per week, and the recent lines. Use it for 'how often do we buy X', 'when did we last buy X', 'how much do we spend on X', 'which X do we usually buy'. Query in Dutch product words or brand names (bier, melk, kaas, koffie, Hertog Jan); try a second wording if the first finds nothing.",
+    schema: z.object({
+      query: z.string().min(1).max(80),
+      days: z.number().int().min(7).max(730).optional(),
+    }),
+    sideEffect: "none",
+    async handler(args, ctx) {
+      const stats = await purchaseStats(ctx.db, ctx.household.id, args.query, args.days ?? 180);
+      const coverage = await purchaseCoverage(ctx.db, ctx.household.id);
+      return {
+        ...stats,
+        matches: stats.matches.map((m) => ({ ...m, totalSpent: money(m.totalSpent) })),
+        totalSpent: money(stats.totalSpent),
+        coverage: coverage.trips ? `${coverage.trips} trips/orders on record from ${coverage.from} to ${coverage.to}` : "no purchase history imported yet",
+      };
+    },
+  });
+
+  const purchasesRecent = defineTool({
+    name: "purchases_recent",
+    description: "The family's last shopping trips and online orders at Albert Heijn: date, in-store or online, total, item count and a few item names.",
+    schema: z.object({ limit: z.number().int().min(1).max(20).optional() }),
+    sideEffect: "none",
+    async handler(args, ctx) {
+      const trips = await recentPurchases(ctx.db, ctx.household.id, args.limit ?? 8);
+      return { trips: trips.map((t) => ({ ...t, total: money(t.total) })) };
+    },
+  });
+
+  const spending = defineTool({
+    name: "spending_summary",
+    description: "Albert Heijn spend per calendar month (in-store and online), newest first, plus how much history is on record.",
+    schema: z.object({ months: z.number().int().min(1).max(24).optional() }),
+    sideEffect: "none",
+    async handler(args, ctx) {
+      const rows = await spendingByMonth(ctx.db, ctx.household.id, args.months ?? 6);
+      const coverage = await purchaseCoverage(ctx.db, ctx.household.id);
+      return { months: rows.map((r) => ({ ...r, total: money(r.total), inStore: money(r.inStore), online: money(r.online) })), coverage };
+    },
+  });
+
+  const purchasesSync = defineTool({
+    name: "purchases_sync",
+    description: "Fetch new Albert Heijn receipts and orders into the purchase history now (normally runs by itself every few hours). Use when the user says a purchase is missing or asks to refresh the history.",
+    schema: z.object({}),
+    sideEffect: "none",
+    async handler(_args, ctx) {
+      const ah = await requireMember(ctx);
+      const res = await importPurchases({ db: ctx.db, log: ctx.log }, ah, ctx.household.id, { maxTitleLookups: 100 });
+      const coverage = await purchaseCoverage(ctx.db, ctx.household.id);
+      return { ...res, coverage };
+    },
+  });
+
   async function promptFragment(ctx: ToolContext): Promise<string> {
     const status = await accountStatus(ctx.db, ctx.household.id);
     if (status !== "connected") return "Store: Albert Heijn is NOT connected yet. Search works; the admin connects it with /store ah.";
+    const coverage = await purchaseCoverage(ctx.db, ctx.household.id).catch(() => null);
+    const history = coverage?.trips
+      ? `Purchase history: ${coverage.trips} AH shopping trips and online orders on record (${coverage.from} to ${coverage.to}, ${coverage.items} lines). Use purchase_history / purchases_recent / spending_summary to answer how often, when, how much and which brand; never guess these.`
+      : "Purchase history: nothing imported yet (purchases_sync fetches it).";
     if (write) {
       return [
         "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought), read the family's AH basket (basket_view) and change it:",
         "basket_add (one call per product, with qty) and basket_fill_from_list put things in; each produces a button under your message that names the product, quantity and price, and the user taps it to apply. basket_remove takes a product out at once. basket_clear empties the basket after a tap. basket_plan previews the list-to-product matching without changing anything.",
         "When asked to buy or add something, search, pick, call basket_add for every product, and in your reply list each product with quantity and price and the total; say the buttons below apply them. After a confirmed add the user gets remove buttons. You never pay; a family member checks out in the AH app.",
+        history,
       ].join(" ");
     }
-    return "Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought) and read the AH list. AH does not let the bot write the basket directly, so basket_add and basket_fill_from_list return one-tap add links with prices; the user taps them in the AH app to add and check out. Present the links clearly, grouped, with prices. You never pay.";
+    return `Store: Albert Heijn is connected. You can search AH (real prices, bonus, previously-bought) and read the AH list. AH does not let the bot write the basket directly, so basket_add and basket_fill_from_list return one-tap add links with prices; the user taps them in the AH app to add and check out. Present the links clearly, grouped, with prices. You never pay. ${history}`;
   }
 
   return {
     name: "store",
-    tools: [storeStatus, storeSearch, storeProduct, basketView, basketAdd, basketPlan, basketFill, ...(write ? [basketRemove, basketClear] : []), purchasesOf] as Capability["tools"],
+    tools: [
+      storeStatus,
+      storeSearch,
+      storeProduct,
+      basketView,
+      basketAdd,
+      basketPlan,
+      basketFill,
+      ...(write ? [basketRemove, basketClear] : []),
+      purchasesOf,
+      purchaseHistory,
+      purchasesRecent,
+      spending,
+      purchasesSync,
+    ] as Capability["tools"],
     promptFragment,
+  };
+}
+
+/**
+ * Background sync for the server: imports new receipts/orders now and then
+ * every `intervalMs`. Skips silently while AH is not connected. Returns a stop
+ * function.
+ */
+export function startPurchaseSync(deps: { db: Db; log: Logger; sessionSecret: string; householdId: () => number; intervalMs?: number; initialDelayMs?: number }): () => void {
+  let running = false;
+  const run = async (reason: string) => {
+    if (running) return;
+    running = true;
+    try {
+      const hid = deps.householdId();
+      const storeDeps: StoreDeps = { db: deps.db, sessionSecret: deps.sessionSecret };
+      if (!(await tokenSource(storeDeps, hid).isMember())) return;
+      const ah = buildClient(storeDeps, hid);
+      const res = await importPurchases({ db: deps.db, log: deps.log }, ah, hid, { maxTitleLookups: 300 });
+      deps.log.info({ reason, ...res }, "purchase sync");
+    } catch (err) {
+      deps.log.warn({ err: err instanceof Error ? err.message : String(err), reason }, "purchase sync failed");
+    } finally {
+      running = false;
+    }
+  };
+  const first = setTimeout(() => void run("startup"), deps.initialDelayMs ?? 30_000);
+  const timer = setInterval(() => void run("interval"), deps.intervalMs ?? 6 * 60 * 60_000);
+  return () => {
+    clearTimeout(first);
+    clearInterval(timer);
   };
 }

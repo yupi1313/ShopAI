@@ -2,7 +2,7 @@ import { createDb, runMigrations } from "@shopai/db";
 import { createZagiClient, zagiConfigFromEnv } from "@shopai/llm";
 import { Agent } from "@shopai/core";
 import { groceryCapability } from "@shopai/capability-grocery";
-import { createStoreCapability } from "@shopai/capability-store";
+import { createStoreCapability, startPurchaseSync } from "@shopai/capability-store";
 import { createWebCapability } from "@shopai/capability-web";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
@@ -71,10 +71,15 @@ async function main(): Promise<void> {
   let polling = false;
   const http = await startHttp({ log, host: cfg.HTTP_HOST, port: cfg.HTTP_PORT, isReady: () => polling });
   const stopLiveness = startLiveness(cfg.LIVENESS_FILE, () => polling);
+  // Purchase history: receipts + online orders, 30 s after boot and every 6 h.
+  const stopPurchaseSync = cfg.SESSION_SECRET
+    ? startPurchaseSync({ db: handle.db, log, sessionSecret: cfg.SESSION_SECRET, householdId: () => household.id })
+    : () => {};
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, "shutting down");
     polling = false;
+    stopPurchaseSync();
     stopLiveness();
     await bot.stop().catch(() => {});
     await http.close().catch(() => {});

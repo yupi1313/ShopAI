@@ -10,6 +10,7 @@ import {
   type Db,
 } from "@shopai/db";
 import type { ZagiClient } from "@shopai/llm";
+import { usualProductFor } from "./purchases.js";
 
 export interface MatchCandidate {
   product: StoreProduct;
@@ -21,7 +22,7 @@ export interface MatchResult {
   chosen: StoreProduct | null;
   reason: string;
   /** How the choice was made. */
-  via: "alias" | "previously_bought" | "llm" | "top" | "none";
+  via: "alias" | "history" | "previously_bought" | "llm" | "top" | "none";
   /** Candidates to offer the user when confidence is low. */
   candidates: StoreProduct[];
   /** True when the caller should ask the user to pick from candidates. */
@@ -123,6 +124,16 @@ export async function matchItem(
   if (aliasId) {
     const p = await ah.product(aliasId).catch(() => null);
     if (p && p.orderable) return { chosen: p, reason: "your usual choice", via: "alias", candidates: [p], needsChoice: false };
+  }
+
+  // Purchase history (receipts + orders): the product bought most often under this name.
+  const usual = await usualProductFor(deps.db, householdId, item.name).catch(() => null);
+  if (usual) {
+    const p = await ah.product(usual.productId).catch(() => null);
+    if (p && p.orderable) {
+      await cacheProducts(deps.db, [p]);
+      return { chosen: p, reason: `bought ${usual.times}× in the last year`, via: "history", candidates: [p], needsChoice: false };
+    }
   }
 
   let results: StoreProduct[] = [];

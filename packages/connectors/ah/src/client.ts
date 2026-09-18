@@ -3,6 +3,10 @@ import {
   AhError,
   AhGraphqlError,
   type AhBasket,
+  type AhOrder,
+  type AhOrderSummary,
+  type AhReceipt,
+  type AhReceiptSummary,
   type AhTokens,
   type ShoppingList,
   type StoreProduct,
@@ -26,6 +30,20 @@ const BASKET_FIELDS =
 export const BASKET_QUERY = `query basket { basket { ${BASKET_FIELDS} } }`;
 /** Captured from the website's quantity stepper on 2026-09-17; quantities are absolute per product. */
 export const BASKET_MUTATION = `mutation basketItemsUpdate($items: [BasketMutation!]!) { basketItemsUpdate(items: $items) { result { ${BASKET_FIELDS} } __typename } }`;
+
+// Purchase history. In-store receipts (kassabonnen) live behind
+// posReceiptsPage / posReceiptDetails; their product ids are till ids that
+// productConvertId maps to webshop ids. Online orders are listed by
+// orderFulfillments and detailed by a REST endpoint. All verified with the
+// family's member token on 2026-09-18 (docs/STORE-AH.md).
+export const RECEIPTS_QUERY =
+  "query FetchPosReceipts($offset: Int!, $limit: Int!) { posReceiptsPage(pagination: {offset: $offset, limit: $limit}) { pagination { offset limit totalElements } posReceipts { id dateTime totalAmount { amount } } } }";
+export const RECEIPT_QUERY =
+  "query FetchReceipt($id: String!) { posReceiptDetails(id: $id) { id storeInfo total { amount } discountTotal { amount } transaction { store dateTime } products { id quantity name price { amount } amount { amount } weight { amount unit } } discounts { type name amount { amount } } } }";
+export const ORDERS_QUERY =
+  "query OrderFulfillments($status: FulfillmentStatus!) { orderFulfillments(status: $status) { result { orderId statusCode statusDescription shoppingType transactionCompleted closingDateTime totalPrice { totalPrice { amount } } delivery { method slot { date } } } } }";
+
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 interface RawBasketLine {
   id?: string | number;
@@ -319,6 +337,140 @@ export class AhClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /** One page of in-store receipts, newest first. `total` in the result is the overall count. */
+  async receipts(offset = 0, limit = 50): Promise<{ total: number; receipts: AhReceiptSummary[] }> {
+    const data = await this.graphql<{
+      posReceiptsPage: { pagination?: { totalElements?: number } | null; posReceipts?: Array<{ id: string; dateTime: string; totalAmount?: { amount?: number } | null }> | null } | null;
+    }>("FetchPosReceipts", RECEIPTS_QUERY, { offset, limit: Math.min(100, Math.max(1, limit)) }, { requireMember: true });
+    const page = data.posReceiptsPage;
+    const receipts = (page?.posReceipts ?? []).map((r) => ({ id: r.id, dateTime: r.dateTime, total: num(r.totalAmount?.amount) }));
+    return { total: page?.pagination?.totalElements ?? receipts.length, receipts };
+  }
+
+  async receipt(id: string): Promise<AhReceipt> {
+    const data = await this.graphql<{
+      posReceiptDetails: {
+        id: string;
+        storeInfo?: string[] | null;
+        total?: { amount?: number } | null;
+        discountTotal?: { amount?: number } | null;
+        transaction?: { store?: number; dateTime?: string } | null;
+        products?: Array<{
+          id?: number | null;
+          quantity?: number | null;
+          name?: string | null;
+          price?: { amount?: number } | null;
+          amount?: { amount?: number } | null;
+          weight?: { amount?: number; unit?: string } | null;
+        }> | null;
+        discounts?: Array<{ type?: string | null; name?: string | null; amount?: { amount?: number } | null }> | null;
+      } | null;
+    }>("FetchReceipt", RECEIPT_QUERY, { id }, { requireMember: true });
+    const r = data.posReceiptDetails;
+    if (!r) throw new AhGraphqlError("FetchReceipt", [{ message: "receipt not found" }]);
+    return {
+      id: r.id,
+      storeId: num(r.transaction?.store) ?? (r.storeInfo?.[0] ? Number(r.storeInfo[0]) || null : null),
+      localDateTime: r.transaction?.dateTime ?? null,
+      total: num(r.total?.amount),
+      discountTotal: num(r.discountTotal?.amount),
+      lines: (r.products ?? []).map((p) => ({
+        posId: num(p.id),
+        name: (p.name ?? "").trim(),
+        quantity: num(p.quantity) ?? 1,
+        unitPrice: num(p.price?.amount),
+        amount: num(p.amount?.amount),
+        weight: p.weight && num(p.weight.amount) !== null ? { amount: p.weight.amount as number, unit: p.weight.unit ?? "" } : null,
+      })),
+      discounts: (r.discounts ?? []).map((d) => ({ type: d.type ?? null, name: (d.name ?? "").trim(), amount: num(d.amount?.amount) })),
+    };
+  }
+
+  /**
+   * Map till product ids (PosReceiptProduct.id) to webshop ids. One aliased
+   * query per 50 ids; unknown ids are left out of the result.
+   */
+  async convertPosIds(ids: number[]): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    const unique = [...new Set(ids.filter((n) => Number.isInteger(n) && n > 0))];
+    for (let i = 0; i < unique.length; i += 50) {
+      const chunk = unique.slice(i, i + 50);
+      const query = `query Convert { ${chunk.map((id, k) => `p${k}: productConvertId(sourceId: ${id})`).join(" ")} }`;
+      const data = await this.graphql<Record<string, number | null>>("Convert", query);
+      chunk.forEach((id, k) => {
+        const v = data[`p${k}`];
+        if (typeof v === "number" && v > 0) out.set(id, v);
+      });
+    }
+    return out;
+  }
+
+  /** Every online order (open and closed), newest first. */
+  async orders(): Promise<AhOrderSummary[]> {
+    const data = await this.graphql<{
+      orderFulfillments: {
+        result?: Array<{
+          orderId: number;
+          statusCode?: number;
+          statusDescription?: string | null;
+          shoppingType?: string | null;
+          transactionCompleted?: boolean;
+          closingDateTime?: string | null;
+          totalPrice?: { totalPrice?: { amount?: number } | null } | null;
+          delivery?: { method?: string | null; slot?: { date?: string | null } | null } | null;
+        }> | null;
+      } | null;
+    }>("OrderFulfillments", ORDERS_QUERY, { status: "ALL" }, { requireMember: true });
+    return (data.orderFulfillments?.result ?? []).map((o) => ({
+      orderId: o.orderId,
+      closingDateTime: o.closingDateTime ?? null,
+      deliveryDate: o.delivery?.slot?.date ?? null,
+      total: num(o.totalPrice?.totalPrice?.amount),
+      status: o.statusDescription ?? null,
+      shoppingType: o.shoppingType ?? null,
+      completed: Boolean(o.transactionCompleted),
+    }));
+  }
+
+  /** Lines of one online order (REST, grouped by taxonomy on AH's side, flattened here). */
+  async order(orderId: number): Promise<AhOrder> {
+    const res = await this.authGet(`/order/v1/${orderId}/details-grouped-by-taxonomy`);
+    const text = await res.text();
+    if (!res.ok) throw new AhError(res.status, `/order/v1/${orderId}/details-grouped-by-taxonomy`, text);
+    const body = JSON.parse(text) as {
+      orderId?: number;
+      orderState?: string;
+      closingTime?: string;
+      deliveryDate?: string;
+      groupedProductsInTaxonomy?: Array<{
+        orderedProducts?: Array<{
+          amount?: number;
+          quantity?: number;
+          allocatedQuantity?: number;
+          price?: number;
+          totalPrice?: number;
+          product?: { webshopId?: number; title?: string; brand?: string; salesUnitSize?: string; currentPrice?: number; priceBeforeBonus?: number };
+        }>;
+      }>;
+    };
+    const lines = (body.groupedProductsInTaxonomy ?? []).flatMap((g) =>
+      (g.orderedProducts ?? []).map((op) => {
+        const quantity = num(op.allocatedQuantity) ?? num(op.quantity) ?? num(op.amount) ?? 1;
+        const unitPrice = num(op.price) ?? num(op.product?.currentPrice) ?? num(op.product?.priceBeforeBonus);
+        return {
+          webshopId: num(op.product?.webshopId),
+          title: op.product?.title ?? "",
+          brand: op.product?.brand ?? null,
+          size: op.product?.salesUnitSize ?? null,
+          quantity,
+          unitPrice,
+          amount: num(op.totalPrice) ?? (unitPrice === null ? null : Math.round(unitPrice * quantity * 100) / 100),
+        };
+      }),
+    );
+    return { orderId: body.orderId ?? orderId, state: body.orderState ?? null, closingTime: body.closingTime ?? null, deliveryDate: body.deliveryDate ?? null, lines };
   }
 
   /** The member's online-order basket. */
