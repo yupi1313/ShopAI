@@ -459,7 +459,7 @@ export function startPurchaseSync(deps: { db: Db; log: Logger; sessionSecret: st
       const storeDeps: StoreDeps = { db: deps.db, sessionSecret: deps.sessionSecret };
       if (!(await tokenSource(storeDeps, hid).isMember())) return;
       const ah = buildClient(storeDeps, hid);
-      const res = await importPurchases({ db: deps.db, log: deps.log }, ah, hid, { maxTitleLookups: 300 });
+      const res = await importPurchases({ db: deps.db, log: deps.log }, ah, hid, { maxTitleLookups: 1500 });
       deps.log.info({ reason, ...res }, "purchase sync");
     } catch (err) {
       deps.log.warn({ err: err instanceof Error ? err.message : String(err), reason }, "purchase sync failed");

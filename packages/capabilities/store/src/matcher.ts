@@ -52,6 +52,7 @@ export async function cacheProducts(db: Db, list: StoreProduct[]): Promise<void>
         isBonus: p.isBonus,
         bonusUntil: p.bonusUntil,
         category: p.category,
+        subcategory: p.subcategory,
         imageUrl: p.imageUrl,
         fetchedAt: new Date(),
       })
@@ -67,6 +68,7 @@ export async function cacheProducts(db: Db, list: StoreProduct[]): Promise<void>
           isBonus: p.isBonus,
           bonusUntil: p.bonusUntil,
           category: p.category,
+        subcategory: p.subcategory,
           imageUrl: p.imageUrl,
           fetchedAt: new Date(),
         },

@@ -13,6 +13,8 @@ export interface StoreProduct {
   orderable: boolean;
   previouslyBought: boolean;
   category: string | null;
+  /** AH sub-category, e.g. "Zwaar bier", "Witte wijn". */
+  subcategory: string | null;
   imageUrl: string | null;
 }
 

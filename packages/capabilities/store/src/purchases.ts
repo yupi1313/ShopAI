@@ -156,7 +156,7 @@ export async function resolveTitles(deps: ImportDeps, ah: AhClient, householdId:
     .from(purchaseItems)
     .innerJoin(purchases, eq(purchaseItems.purchaseId, purchases.id))
     .leftJoin(productsTable, and(eq(productsTable.store, "ah"), eq(productsTable.productId, purchaseItems.productId)))
-    .where(and(eq(purchases.householdId, householdId), eq(purchases.channel, "store"), isNotNull(purchaseItems.productId), isNull(productsTable.productId)))
+    .where(and(eq(purchases.householdId, householdId), isNotNull(purchaseItems.productId), or(isNull(productsTable.productId), isNull(productsTable.subcategory))))
     .limit(max);
   let resolved = 0;
   for (const r of rows) {
@@ -194,6 +194,8 @@ export interface HistoryMatch {
   productId: string | null;
   title: string;
   brand: string | null;
+  /** AH sub-category when known, e.g. "Zwaar bier". */
+  category: string | null;
   times: number;
   totalQty: number;
   totalSpent: number;
@@ -220,30 +222,32 @@ export interface HistoryStats {
 export async function purchaseStats(db: Db, householdId: number, query: string, days = 180): Promise<HistoryStats> {
   const since = new Date(Date.now() - days * 86_400_000);
   const q = `%${normalizeName(query)}%`;
-  const rows = await db
-    .select({
-      purchaseId: purchases.id,
-      boughtAt: purchases.boughtAt,
-      channel: purchases.channel,
-      productId: purchaseItems.productId,
-      nameRaw: purchaseItems.nameRaw,
-      brand: purchaseItems.brand,
-      qty: purchaseItems.qty,
-      price: purchaseItems.price,
-      title: productsTable.title,
-      pBrand: productsTable.brand,
-    })
-    .from(purchaseItems)
-    .innerJoin(purchases, eq(purchaseItems.purchaseId, purchases.id))
-    .leftJoin(productsTable, and(eq(productsTable.store, "ah"), eq(productsTable.productId, purchaseItems.productId)))
-    .where(
-      and(
-        eq(purchases.householdId, householdId),
-        gte(purchases.boughtAt, since),
-        or(ilike(purchaseItems.nameNorm, q), ilike(purchaseItems.nameRaw, q), ilike(purchaseItems.brand, q), ilike(productsTable.title, q), ilike(productsTable.brand, q), ilike(productsTable.category, q)),
-      ),
-    )
-    .orderBy(desc(purchases.boughtAt));
+  // Pass 1: product name, brand or AH sub-category ("Zwaar bier"). Pass 2, only
+  // when that finds nothing: the coarse category ("Bier, wijn, aperitieven"),
+  // which would otherwise drag wine into a beer question.
+  const select = (where: ReturnType<typeof or>) =>
+    db
+      .select({
+        purchaseId: purchases.id,
+        boughtAt: purchases.boughtAt,
+        channel: purchases.channel,
+        productId: purchaseItems.productId,
+        nameRaw: purchaseItems.nameRaw,
+        brand: purchaseItems.brand,
+        qty: purchaseItems.qty,
+        price: purchaseItems.price,
+        title: productsTable.title,
+        pBrand: productsTable.brand,
+        subcategory: productsTable.subcategory,
+        category: productsTable.category,
+      })
+      .from(purchaseItems)
+      .innerJoin(purchases, eq(purchaseItems.purchaseId, purchases.id))
+      .leftJoin(productsTable, and(eq(productsTable.store, "ah"), eq(productsTable.productId, purchaseItems.productId)))
+      .where(and(eq(purchases.householdId, householdId), gte(purchases.boughtAt, since), where))
+      .orderBy(desc(purchases.boughtAt));
+  let rows = await select(or(ilike(purchaseItems.nameNorm, q), ilike(purchaseItems.nameRaw, q), ilike(purchaseItems.brand, q), ilike(productsTable.title, q), ilike(productsTable.brand, q), ilike(productsTable.subcategory, q)));
+  if (rows.length === 0) rows = await select(or(ilike(productsTable.category, q)));
 
   const [tripRow] = await db
     .select({ n: sqlTag<number>`count(*)::int` })
@@ -270,7 +274,7 @@ export async function purchaseStats(db: Db, householdId: number, query: string, 
       if (when < m.firstBought) m.firstBought = when;
       if (when > m.lastBought) m.lastBought = when;
     } else {
-      byProduct.set(key, { productId: r.productId, title: r.title ?? r.nameRaw, brand: r.brand ?? r.pBrand ?? null, times: 1, totalQty: qty, totalSpent: spent, lastBought: when, firstBought: when });
+      byProduct.set(key, { productId: r.productId, title: r.title ?? r.nameRaw, brand: r.brand ?? r.pBrand ?? null, category: r.subcategory ?? r.category ?? null, times: 1, totalQty: qty, totalSpent: spent, lastBought: when, firstBought: when });
     }
   }
   const matches = [...byProduct.values()].sort((a, b) => b.times - a.times || b.totalSpent - a.totalSpent);

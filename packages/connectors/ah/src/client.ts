@@ -166,6 +166,7 @@ interface RawProduct {
   isOrderable?: boolean;
   isPreviouslyBought?: boolean;
   mainCategory?: string;
+  subCategory?: string;
   images?: Array<{ url?: string; width?: number }>;
 }
 
@@ -187,6 +188,7 @@ function normalizeProduct(p: RawProduct): StoreProduct {
     orderable: p.isOrderable ?? true,
     previouslyBought: Boolean(p.isPreviouslyBought),
     category: p.mainCategory ?? null,
+    subcategory: p.subCategory ?? null,
     imageUrl: img?.url ?? (p.images ?? [])[0]?.url ?? null,
   };
 }

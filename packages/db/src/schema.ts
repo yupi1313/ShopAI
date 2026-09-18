@@ -205,6 +205,7 @@ export const products = pgTable(
     isBonus: boolean("is_bonus").notNull().default(false),
     bonusUntil: text("bonus_until"),
     category: text("category"),
+    subcategory: text("subcategory"),
     imageUrl: text("image_url"),
     fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
   },
